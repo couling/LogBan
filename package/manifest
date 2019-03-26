@@ -32,9 +32,16 @@
 #       link <source> <target>
 #            creates a symbolic link on the target system. Source is relative to the target link
 #
-source  ..
+source  .
  
-control package/control
-# file    package/conffiles                 DEBIAN/conffiles           644
+control control
+file    conffiles                                 DEBIAN/conffiles           644
+
+source ..
+
+file    logban.py                                 /usr/sbin/logban           755
+file    config                                    /etc/logban                644
+
+
 
 
