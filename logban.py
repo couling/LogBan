@@ -1,13 +1,18 @@
 #!/usr/bin/python3
 
+from configobj import ConfigObj
 from datetime import datetime, date, timedelta
 from getopt import getopt
+import json
 import os
 import os.path
 import pyinotify
 import re
+import signal
 import sys
-
+import sqlalchemy
+import sqlalchemy.ext.declarative
+import sqlalchemy.orm
 
 event_actions = {}
 
@@ -56,6 +61,14 @@ def unregister_file(path):
                 break
         else:
             __wm.remove_watch(__wd_dict[directory])
+
+
+def save_file_positions():
+    session = db_session()
+    for path, monitor in file_monitors.items():
+        session.merge(DBLogStatus(path=path, position=monitor.get_pos()))
+    session.commit()
+    session.close()
 
 
 def loop():
@@ -134,7 +147,9 @@ class LogFilter(object):
         'port': r'(?P<port>[0-9]{1,5})',
         'user': r'(?P<user>.*)',
         'session': r'(?P<session>.*)',
-        'friendly_time': r'(?P<friendly_time>(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2})'
+        'friendly_time':
+            r'(?P<friendly_time>(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)'
+            ' [0-9]{1,2} [0-9]{2}:[0-9]{2}:[0-9]{2})'
     }
     
     def __init__(self, event, log_path, pattern):
@@ -170,20 +185,31 @@ param_processors = [
 
 
 def load_config():
-    opt_list, _ = getopt(sys.argv[1:], '', ['config='])
-    opt_list = { option[2:]: value for option, value in opt_list }
+    opt_list, _ = getopt(sys.argv[1:], '', ['config-path='])
+    opt_list = {option[2:].replace('-','_'): value for option, value in opt_list}
     return load_config_files(**opt_list)
 
 
-def load_config_files(config='/etc/logban', **other_options):
-    filters_conf = load_config_filters(config)
+def load_config_files(config_path='/etc/logban'):
+    global db_engine
+    # Load core config
+    core_config =  ConfigObj(os.path.join(config_path, 'logban.conf'))
+    filters_conf = load_config_filters(config_path)
+
+    # Open database connection
+    connect_db(**core_config.get('db', default={}))
+
+    # Setup file monitors and filters
+    session = db_session()
+    log_status = {status.path: status.position for status in session.query(DBLogStatus)}
+    session.close()
     for filter_conf in filters_conf:
         log_path = os.path.abspath(filter_conf['log_path'])
-        # Enable monitoring of this log
-        register_file(log_path)
+        # Enable monitoring of this log, don't worry about duplication
+        register_file(log_path, log_status.get(log_path,0))
         # Add a new filter for this log
-        filter = LogFilter(**filter_conf)
-        register_action(log_path, filter.filter_line)
+        log_filter = LogFilter(**filter_conf)
+        register_action(log_path, log_filter.filter_line)
 
 
 def load_config_filters(config):
@@ -202,6 +228,91 @@ def load_config_filters(config):
     return filters
 
 
-load_config()
-register_action('sshd_auth_success', lambda event, ** args: print("Triggered: %s: %s" % (event, args)))
-loop()
+db_engine = None
+db_session = None
+
+DBBase = sqlalchemy.ext.declarative.declarative_base()
+
+
+def connect_db(path='/var/lib/logban/logban.sqlite3', **excess_args):
+    global DBBase, db_engine, db_session
+    db_engine = sqlalchemy.create_engine('sqlite:///%s' % path, echo=True)
+    DBBase.metadata.create_all(db_engine)
+    db_session = sqlalchemy.orm.sessionmaker(bind=db_engine)
+
+
+class DBTriggerStatus(DBBase):
+    __tablename__ = 'trigger_status'
+
+    trigger_id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    times_triggered = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
+    last_triggered = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
+    first_triggered = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
+
+    def __repr__(self):
+        return "<DBTriggerStatus(trigger_id='%s', status_key='%s', times_triggered='%d',"\
+               "last_triggered='%s', first_triggered='%s')>" % (
+                self.trigger_id,
+                self.status_key,
+                self.times_triggered,
+                self.last_triggered,
+                self.first_triggered)
+
+
+class DBTriggerStatusTime(DBBase):
+    __tablename__ = 'trigger_status_times'
+
+    trigger_id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    time_triggered = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
+
+    def __repr__(self):
+        return "<DBTriggerStatusTime(trigger_id='%s', status_key='%s', time_triggered='%s')>" % (
+                self.trigger_id,
+                self.status_key,
+                self.time_triggered)
+
+
+class DBTriggerStatusLine(DBBase):
+    __tablename__ = 'trigger_status_lines'
+
+    trigger_id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    triggered_time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
+    triggered_line = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+
+    def __repr__(self):
+        return "<DBTriggerStatusLine(trigger_id='%s', status_key='%s', triggered_time='%d', triggered_line='%s')>" % (
+                self.trigger_id,
+                self.status_key,
+                self.triggered_time,
+                self.triggered_line)
+
+
+class DBLogStatus(DBBase):
+    __tablename__ = 'log_status'
+
+    path = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    position = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
+
+    def __repr__(self):
+        return "<DBLogStatus(path='%s', position='%d', triggered_time='%d', triggered_line='%s')>" % (
+                self.path,
+                self.position)
+
+
+def __on_sigterm(signum, frame):
+    save_file_positions()
+    exit(0)
+
+
+def main():
+    signal.signal(signal.SIGINT, __on_sigterm)
+    signal.signal(signal.SIGTERM, __on_sigterm)
+    load_config()
+    register_action('sshd_auth_success', lambda event, ** args: print("Triggered: %s: %s" % (event, args)))
+    loop()
+
+
+main()
