@@ -1,7 +1,7 @@
-#!/usr/bin/python3
+#! /usr/bin/python3
 
 from configobj import ConfigObj
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 from getopt import getopt
 import json
 import os
@@ -13,6 +13,11 @@ import sys
 import sqlalchemy
 import sqlalchemy.ext.declarative
 import sqlalchemy.orm
+
+
+##########
+# Events #
+##########
 
 event_actions = {}
 
@@ -33,6 +38,10 @@ def publish_event(event, **details):
         # even if there are no listeners
         event_actions[event] = []
 
+
+#############################
+# File monitoring (inotify) #
+#############################
 
 __notify_events = pyinotify.IN_CREATE | pyinotify.IN_DELETE | pyinotify.IN_MODIFY
 __wd_dict = {}
@@ -114,7 +123,7 @@ class FileMonitor(object):
         pos = self.get_pos()
         line = self.file.readline()
         if line == '' and auto_reset:
-            self.reset()
+            self.open()
             pos = self.file.tell()
             line = self.file.readline()
         while line != '':
@@ -139,6 +148,10 @@ class FileMonitor(object):
             self.file.close()
             self.file = None
 
+
+##################
+# Line Filtering #
+##################
 
 class LogFilter(object):
 
@@ -184,6 +197,10 @@ param_processors = [
 ]
 
 
+#################
+# Configuration #
+#################
+
 def load_config():
     opt_list, _ = getopt(sys.argv[1:], '', ['config-path='])
     opt_list = {option[2:].replace('-','_'): value for option, value in opt_list}
@@ -227,6 +244,10 @@ def load_config_filters(config):
                         filters.append(match.groupdict())
     return filters
 
+
+############
+# Database #
+############
 
 db_engine = None
 db_session = None
@@ -302,6 +323,10 @@ class DBLogStatus(DBBase):
                 self.position)
 
 
+########################
+# Startup and shutdown #
+########################
+
 def __on_sigterm(signum, frame):
     save_file_positions()
     exit(0)
@@ -315,4 +340,5 @@ def main():
     loop()
 
 
-main()
+if __name__ == '__main__':
+    main()
