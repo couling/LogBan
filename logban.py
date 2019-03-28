@@ -8,7 +8,6 @@ import os
 import os.path
 import pyinotify
 import re
-import signal
 import sys
 import sqlalchemy
 import sqlalchemy.ext.declarative
@@ -31,12 +30,15 @@ def register_action(event, action):
 
 def publish_event(event, **details):
     try:
-        for action in event_actions[event]:
-            action(event, **details)
+        actions = event_actions[event]
     except KeyError:
         # Avoid excessive exceptions, If an event is published then assume it will be again and create an event
         # even if there are no listeners
-        event_actions[event] = []
+        actions = []
+        event_actions[event] = actions
+    for action in actions:
+        action(event, **details)
+
 
 
 #############################
@@ -50,9 +52,9 @@ __wm = pyinotify.WatchManager()
 file_monitors = {}
 
 
-def register_file(path, position=0):
+def register_file(path):
     if path not in file_monitors:
-        file_monitors[path] = FileMonitor(path, position)
+        file_monitors[path] = FileMonitor(path)
         directory = os.path.dirname(path)
         if directory not in __wd_dict:
             __wd_dict[directory] = __wm.add_watch(directory, __notify_events, rec=True)
@@ -70,14 +72,6 @@ def unregister_file(path):
                 break
         else:
             __wm.remove_watch(__wd_dict[directory])
-
-
-def save_file_positions():
-    session = db_session()
-    for path, monitor in file_monitors.items():
-        session.merge(DBLogStatus(path=path, position=monitor.get_pos()))
-    session.commit()
-    session.close()
 
 
 def loop():
@@ -109,10 +103,17 @@ class __INotifyEvent(pyinotify.ProcessEvent):
 
 class FileMonitor(object):
 
-    def __init__(self, file_path, position=0):
+    def __init__(self, file_path):
         self.file_path = file_path
         self.file = None
-        self.open(position)
+        self.filters = []
+        with DBSession() as session:
+            self.status_entry = session.query(DBLogStatus).get(file_path)
+            if self.status_entry is None:
+                self.status_entry = DBLogStatus(path=file_path, position=0)
+                session.add(self.status_entry)
+                session.commit()
+        self.open(self.status_entry.position)
 
     def get_pos(self):
         return self.file.tell()
@@ -128,9 +129,14 @@ class FileMonitor(object):
             line = self.file.readline()
         while line != '':
             if line[-1:] == '\n':
-                publish_event(self.file_path, line=line[:-1])
-                pos = self.file.tell()
-                line = self.file.readline()
+                with DBSession() as session:
+                    for line_filter in self.filters:
+                        line_filter.filter_line(log=self.file_path, line=line[:-1])
+                    pos = self.file.tell()
+                    line = self.file.readline()
+                    self.status_entry.position = pos
+                    session.add(self.status_entry)
+                    session.commit()
             else:
                 # if we get a partial line we seek back to the start of the line
                 self.file.seek(pos)
@@ -172,13 +178,13 @@ class LogFilter(object):
         self.log_path = log_path
         self.pattern = re.compile(pattern.format(**LogFilter.friendly_params))
 
-    def filter_line(self, log, line, ** named_params):
+    def filter_line(self, line, ** named_params):
         found = self.pattern.search(line)
         if found is not None:
             params = found.groupdict()
             for processor in param_processors:
                 processor(params)
-            publish_event(self.event, log_path=self.log_path, logs=log, lines=[line], **params)
+            publish_event(self.event, log_path=self.log_path, lines=[line], **params)
 
 
 def _process_friendly_time(params):
@@ -197,9 +203,72 @@ param_processors = [
 ]
 
 
+###########
+# Trigger #
+###########
+
+class GroupCounterTrigger(object):
+
+    def __init__(self, trigger_id, group_on, result_event,
+               trigger_events=[], reset_events=[], count=5, timeout='2592000', **ignored_params):
+        trigger_events = _wrap_cofig_list(trigger_events)
+        reset_events = _wrap_cofig_list(reset_events)
+        self.group_on = _wrap_cofig_list(group_on)
+        self.trigger_id = trigger_id
+        self.result_event = result_event
+        self.events = {event: True for event in trigger_events}
+        self.events.update({event: False for event in reset_events})
+        self.count = int(count)
+        self.timeout = timedelta(seconds=int(timeout))
+
+    def process_event(self, event_name, lines, **params):
+        relavent_params = {key: params[key] for key in self.group_on}
+        trigger_key = json.dumps(relavent_params, sort_keys=True)
+        if self.events[event_name]:
+            time = params.get('time', datetime.now())
+            with DBSession() as session:
+                status = session.query(DBTriggerStatus).get((self.trigger_id, trigger_key))
+                if status is None:
+                    status = DBTriggerStatus(
+                        trigger_id=self.trigger_id,
+                        status_key=trigger_key,
+                        times_triggered=1,
+                        last_triggered=time,
+                        first_triggered=time
+                    )
+                else:
+                    status.last_triggered = time
+                    status.times_triggered += 1
+                for line in lines:
+                    status.lines.append(DBTriggerStatusLine(triggered_time=time, triggered_line=line))
+                status.times.append(DBTriggerStatusTime(time_triggered=time))
+                if status.times_triggered >= self.count:
+                    for time in status.times:
+                        if time.time_triggered < status.last_triggered - self.timeout:
+                            status.times.remove(time)
+                            status.times_triggered -= 1
+                    if status.times_triggered >= self.count:
+                        publish_event(
+                            self.result_event,
+                            lines=[line.triggered_line for line in status.lines],
+                            time=time,
+                            **relavent_params
+                        )
+                session.add(status)
+                session.commit()
+        else:
+            # reset
+            pass
+
+
 #################
 # Configuration #
 #################
+
+config_trigger_types = {
+    'group_counter': GroupCounterTrigger
+}
+
 
 def load_config():
     opt_list, _ = getopt(sys.argv[1:], '', ['config-path='])
@@ -210,59 +279,134 @@ def load_config():
 def load_config_files(config_path='/etc/logban'):
     global db_engine
     # Load core config
-    core_config =  ConfigObj(os.path.join(config_path, 'logban.conf'))
-    filters_conf = load_config_filters(config_path)
-
-    # Open database connection
-    connect_db(**core_config.get('db', default={}))
-
-    # Setup file monitors and filters
-    session = db_session()
-    log_status = {status.path: status.position for status in session.query(DBLogStatus)}
-    session.close()
-    for filter_conf in filters_conf:
-        log_path = os.path.abspath(filter_conf['log_path'])
-        # Enable monitoring of this log, don't worry about duplication
-        register_file(log_path, log_status.get(log_path,0))
-        # Add a new filter for this log
-        log_filter = LogFilter(**filter_conf)
-        register_action(log_path, log_filter.filter_line)
+    core_config = ConfigObj(os.path.join(config_path, 'logban.conf'))
+    filter_config = load_config_filters(config_path)
+    trigger_config = load_config_triggers(config_path)
+    execute_config(
+        core_config=core_config,
+        filter_config=filter_config,
+        trigger_config=trigger_config,
+        action_config=None
+    )
 
 
 def load_config_filters(config):
     filter_re = re.compile(r'^ *(?P<log_path>[^#|]*[^#| ]+) *\| *(?P<event>[^ |]+) *\| *(?P<pattern>.+) *$')
     config = os.path.join(config, 'filters')
-    filters = []
-    filter_files = os.listdir(config)
-    for filter_path in filter_files:
+    filters = {}
+    for filter_path in os.listdir(config):
         filter_path = os.path.join(config, filter_path)
         if filter_path.endswith('.conf'):
             with open(filter_path) as filter_file:
                 for line in filter_file:
                     match = filter_re.match(line)
                     if match is not None:
-                        filters.append(match.groupdict())
+                        params = match.groupdict()
+                        if params['log_path'] not in filters:
+                            filters[params['log_path']] = [params]
+                        else:
+                            filters[params['log_path']].append(params)
     return filters
+
+
+def load_config_triggers(config, triggers={}):
+    config = os.path.join(config, 'triggers')
+    for trigger_path in os.listdir(config):
+        trigger_path = os.path.join(config, trigger_path)
+        if trigger_path.endswith('.conf'):
+            new_triggers = ConfigObj(trigger_path)
+            for name, params in new_triggers.items():
+                if name in triggers:
+                    triggers[name].update(params)
+                else:
+                    triggers[name] = params
+    return triggers
+
+
+def execute_config(core_config, filter_config, trigger_config, action_config):
+    global file_monitors
+    # Open database connection
+    DBSession.initialize_db(**core_config.get('db', default={}))
+
+    # Setup file monitors and filters
+    for file_path, filter_conf in filter_config.items():
+        file_path = os.path.abspath(file_path)
+        if file_path not in file_monitors:
+            register_file(file_path)
+        for config in filter_conf:
+            new_filter = LogFilter(**config)
+            file_monitors[file_path].filters.append(new_filter)
+
+    # Setup triggers
+    for trigger_name, config in trigger_config.items():
+        trigger_type = config_trigger_types[config['type']]
+        new_trigger = trigger_type(trigger_name, **config)
+        for event, _ in new_trigger.events.items():
+            register_action(event, new_trigger.process_event)
+
+
+def _wrap_cofig_list(value):
+    if isinstance(value, list):
+        return value
+    if value == '':
+        return []
+    return [value]
 
 
 ############
 # Database #
 ############
 
-db_engine = None
-db_session = None
-
 DBBase = sqlalchemy.ext.declarative.declarative_base()
 
 
-def connect_db(path='/var/lib/logban/logban.sqlite3', **excess_args):
-    global DBBase, db_engine, db_session
-    db_engine = sqlalchemy.create_engine('sqlite:///%s' % path, echo=True)
-    DBBase.metadata.create_all(db_engine)
-    db_session = sqlalchemy.orm.sessionmaker(bind=db_engine)
+# This class only works if single threaded!  Forks must not happen with open sessions and pthreads are completely out
+class DBSession:
+
+    __db_engine = None
+    _db_session = None
+    __open_new_session = None
+    __ref_count = 0
+
+    def __init__(self):
+        self.is_commit = False
+
+    def __enter__(self):
+        if DBSession.__ref_count == 0:
+            DBSession._db_session = DBSession.__open_new_session()
+        DBSession.__ref_count += 1
+        DBSession._db_session.begin_nested()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.is_commit:
+            DBSession._db_session.commit()
+        else:
+            DBSession._db_session.rollback()
+        DBSession.__ref_count -= 1
+        if DBSession.__ref_count == 0:
+            DBSession._db_session.close()
+            DBSession._db_session = None
+
+    def __getattr__(self, name):
+        return getattr(DBSession._db_session, name)
+
+    def commit(self):
+        self.is_commit = True
+
+    def rollback(self):
+        self.is_commit = False
+
+    @staticmethod
+    def initialize_db(path='/var/lib/logban/logban.sqlite3', **excess_args):
+        global DBBase
+        DBSession.__db_engine = sqlalchemy.create_engine('sqlite:///%s' % path, echo=True)
+        DBBase.metadata.create_all(DBSession.__db_engine)
+        DBSession.__open_new_session = sqlalchemy.orm.sessionmaker(bind=DBSession.__db_engine)
 
 
 class DBTriggerStatus(DBBase):
+
     __tablename__ = 'trigger_status'
 
     trigger_id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
@@ -270,6 +414,8 @@ class DBTriggerStatus(DBBase):
     times_triggered = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
     last_triggered = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
     first_triggered = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
+    lines = sqlalchemy.orm.relationship('DBTriggerStatusLine')
+    times = sqlalchemy.orm.relationship('DBTriggerStatusTime')
 
     def __repr__(self):
         return "<DBTriggerStatus(trigger_id='%s', status_key='%s', times_triggered='%d',"\
@@ -282,11 +428,16 @@ class DBTriggerStatus(DBBase):
 
 
 class DBTriggerStatusTime(DBBase):
-    __tablename__ = 'trigger_status_times'
 
-    trigger_id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    __tablename__ = 'trigger_times'
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_time_seq'), primary_key=True)
+    trigger_id = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    status_key = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     time_triggered = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
+    __table_args__  = (sqlalchemy.ForeignKeyConstraint(['trigger_id', 'status_key'],
+                                                      ['trigger_status.trigger_id', 'trigger_status.status_key'],
+                                                      ondelete="CASCADE"),{})
 
     def __repr__(self):
         return "<DBTriggerStatusTime(trigger_id='%s', status_key='%s', time_triggered='%s')>" % (
@@ -296,12 +447,17 @@ class DBTriggerStatusTime(DBBase):
 
 
 class DBTriggerStatusLine(DBBase):
-    __tablename__ = 'trigger_status_lines'
 
-    trigger_id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    __tablename__ = 'trigger_lines'
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_line_seq'), primary_key=True)
+    trigger_id = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    status_key = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     triggered_time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
     triggered_line = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    __table_args__  = (sqlalchemy.ForeignKeyConstraint(['trigger_id', 'status_key'],
+                                                      ['trigger_status.trigger_id', 'trigger_status.status_key'],
+                                                      ondelete="CASCADE"),{})
 
     def __repr__(self):
         return "<DBTriggerStatusLine(trigger_id='%s', status_key='%s', triggered_time='%d', triggered_line='%s')>" % (
@@ -312,6 +468,7 @@ class DBTriggerStatusLine(DBBase):
 
 
 class DBLogStatus(DBBase):
+
     __tablename__ = 'log_status'
 
     path = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
@@ -327,16 +484,9 @@ class DBLogStatus(DBBase):
 # Startup and shutdown #
 ########################
 
-def __on_sigterm(signum, frame):
-    save_file_positions()
-    exit(0)
-
 
 def main():
-    signal.signal(signal.SIGINT, __on_sigterm)
-    signal.signal(signal.SIGTERM, __on_sigterm)
     load_config()
-    register_action('sshd_auth_success', lambda event, ** args: print("Triggered: %s: %s" % (event, args)))
     loop()
 
 
