@@ -25,13 +25,12 @@ class GroupCounterTrigger(object):
         self.timeout = timedelta(seconds=int(timeout))
 
     def trigger(self, event_name, time, lines, **params):
-        relevant_params = {key: params[key] for key in self.group_on}
-        trigger_key = json.dumps(relevant_params, sort_keys=True)
+        relevant_params = self._relevant_params(params)
+        trigger_key = self._trigger_key(relevant_params)
         with DBSession() as session:
-            status = session.query(_DBTriggerStatus).get((self.trigger_id, trigger_key))
+            status = session.query(_DBTriggerStatus).get(trigger_key)
             if status is None:
                 status = _DBTriggerStatus(
-                    trigger_id=self.trigger_id,
                     status_key=trigger_key,
                     trigger_count=1,
                     last_time=time,
@@ -60,13 +59,15 @@ class GroupCounterTrigger(object):
             session.commit()
 
     def reset(self, event_name, time, lines, **params):
-        relevant_params = {key: params[key] for key in self.group_on}
-        trigger_key = json.dumps(relevant_params, sort_keys=True)
+        trigger_key = self._trigger_key(self._relevant_params(params))
         with DBSession() as session:
-            session.query(_DBTriggerStatus).filter_by(
-                trigger_id=self.trigger_id,
-                status_key=trigger_key
-            ).delete()
+            session.query(_DBTriggerStatus).filter_by(status_key=trigger_key).delete()
+
+    def _relevant_params(self, params):
+        return {key: params[key] for key in self.group_on}
+
+    def _trigger_key(self, params):
+        return json.dumps({ 'i': self.trigger_id, 'j': params}, sort_keys=True)
 
 
 
@@ -74,7 +75,6 @@ class _DBTriggerStatus(DBBase):
 
     __tablename__ = 'trigger_status'
 
-    trigger_id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
     status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
     trigger_count = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
     last_time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
@@ -88,12 +88,13 @@ class _DBTriggerStatusTime(DBBase):
     __tablename__ = 'trigger_times'
 
     id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_time_seq'), primary_key=True)
-    trigger_id = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     status_key = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
     __table_args__ = (sqlalchemy.ForeignKeyConstraint(
-        ['trigger_id', 'status_key'], ['trigger_status.trigger_id', 'trigger_status.status_key'],
-        ondelete="CASCADE"),{})
+        ['status_key'],
+        ['trigger_status.status_key'],
+        ondelete="CASCADE"
+    ),{})
 
 
 class _DBTriggerStatusLine(DBBase):
@@ -101,14 +102,15 @@ class _DBTriggerStatusLine(DBBase):
     __tablename__ = 'trigger_lines'
 
     id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_line_seq'), primary_key=True)
-    trigger_id = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     status_key = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     log = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
     line = sqlalchemy.Column(sqlalchemy.String, nullable=False)
-    __table_args__ = (sqlalchemy.ForeignKeyConstraint(['trigger_id', 'status_key'],
-                                                      ['trigger_status.trigger_id', 'trigger_status.status_key'],
-                                                      ondelete="CASCADE"),{})
+    __table_args__ = (sqlalchemy.ForeignKeyConstraint(
+        ['status_key'],
+        ['trigger_status.status_key'],
+        ondelete="CASCADE"
+    ), {})
 
 
 trigger_types = {
