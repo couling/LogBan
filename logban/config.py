@@ -11,10 +11,6 @@ import logban.filter
 import logban.trigger
 
 
-#################
-# Configuration #
-#################
-
 def load_config():
     opt_list, _ = getopt(sys.argv[1:], '', ['config-path='])
     opt_list = {option[2:].replace('-','_'): value for option, value in opt_list}
@@ -49,7 +45,9 @@ def load_config_filters(config):
     return filters
 
 
-def load_config_triggers(config, triggers={}):
+def load_config_triggers(config, triggers=None):
+    if triggers is None:
+        triggers = {}
     config = os.path.join(config, 'triggers')
     for trigger_path in os.listdir(config):
         trigger_path = os.path.join(config, trigger_path)
@@ -70,7 +68,7 @@ def build_daemon(core_config, filter_config, trigger_config):
 
     # Setup file monitors and filters
     for file_path, filter_conf in filter_config.items():
-        file_path = os.path.abspath(file_path)
+        file_path = os.path.realpath(file_path)
         if file_path not in logban.filemonitor.file_monitors:
             logban.filemonitor.register_file(file_path)
         for config in filter_conf:

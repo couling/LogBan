@@ -81,6 +81,7 @@ class DBSession:
         DBBase.metadata.create_all(DBSession.__db_engine)
         DBSession.__open_new_session = sqlalchemy.orm.sessionmaker(bind=DBSession.__db_engine)
 
+
 ########
 # Misc #
 ########

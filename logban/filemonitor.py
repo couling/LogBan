@@ -4,9 +4,6 @@ import sqlalchemy
 
 from logban.core import DBBase, DBSession
 
-#############################
-# File monitoring (inotify) #
-#############################
 
 _notify_events = pyinotify.IN_CREATE | pyinotify.IN_DELETE | pyinotify.IN_MODIFY
 _wd_dict = {}
@@ -34,7 +31,7 @@ def unregister_file(path):
             if os.path.dirname(other_path) == directory:
                 break
         else:
-            _wm.remove_watch(_wd_dict[directory])
+            _wm.del_watch(_wd_dict[directory])
 
 
 def file_monitor_loop():
@@ -94,7 +91,7 @@ class FileMonitor(object):
             while line != '':
                 if line[-1:] == '\n':
                     for line_filter in self.filters:
-                        line_filter.filter_line(line=line[:-1])
+                        line_filter.filter_line(line=(line[:-1]))
                     pos = self.file.tell()
                     line = self.file.readline()
                 else:
@@ -124,8 +121,3 @@ class _DBLogStatus(DBBase):
 
     path = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
     position = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
-
-    def __repr__(self):
-        return "<DBLogStatus(path='%s', position='%d', triggered_time='%d', triggered_line='%s')>" % (
-                self.path,
-                self.position)

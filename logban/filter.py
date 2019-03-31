@@ -5,10 +5,6 @@ from datetime import datetime, timedelta
 from logban.core import publish_event
 
 
-##################
-# Line Filtering #
-##################
-
 class LogFilter(object):
 
     def __init__(self, event, log_path, pattern):
@@ -24,7 +20,10 @@ class LogFilter(object):
             params = found.groupdict()
             for processor in param_processors:
                 processor(params)
-            publish_event(self.event, log_path=self.log_path, lines=[line], **params)
+            if 'time' not in params:
+                params['time'] = datetime.now()
+            publish_event(self.event, log_path=self.log_path,
+                          lines=[(self.log_path, params['time'], line)], **params)
 
 
 def _process_syslog_time(params):
