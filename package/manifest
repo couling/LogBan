@@ -39,6 +39,7 @@ file    package/conffiles     DEBIAN/conffiles                                64
 
 file    logban.py             /usr/sbin/logban                                755
 file    logban                /usr/lib/python3/dist-packages/logban           644
+file    LICENCE.md            /usr/lib/python3/dist-packages/logban/LICENCE   644
 file    config                /etc/logban                                     644
 
 

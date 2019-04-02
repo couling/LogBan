@@ -44,9 +44,6 @@ class GroupCounterTrigger(object):
             else:
                 status.last_time = time
                 status.trigger_count += 1
-            for log, line_time, line in lines:
-                status.lines.append(_DBTriggerStatusLine(log=log, time=line_time, line=line))
-            status.times.append(_DBTriggerStatusTime(time=time))
             expiry_time = status.last_time - self.timeout
             for previous_trigger_time in status.times:
                 if previous_trigger_time.time < expiry_time:
@@ -55,17 +52,20 @@ class GroupCounterTrigger(object):
             if status.trigger_count >= self.count:
                 publish_event(
                     self.result_event,
-                    lines=[(line.log, line.time, line.line) for line in status.lines],
+                    lines=[(line.log, line.time, line.line) for line in status.lines]+lines,
                     time=time,
                     **relevant_params
                 )
-                session.delete(status)
+                session.query(_DBTriggerStatus).filter_by(status_key=trigger_key).delete()
             else:
+                status.times.append(_DBTriggerStatusTime(time=time))
+                for log, line_time, line in lines:
+                    status.lines.append(_DBTriggerStatusLine(log=log, time=line_time, line=line))
                 session.add(status)
             session.commit()
 
     def reset(self, event_name, time, lines, **params):
-        trigger_key = self._trigger_key(self._relevant_params(params))
+        trigger_key = _trigger_key(self.trigger_id, self._relevant_params(params))
         with DBSession() as session:
             session.query(_DBTriggerStatus).filter_by(status_key=trigger_key).delete()
 
@@ -110,9 +110,7 @@ class BanTrigger(object):
             session.add(status)
             rule = iptc.Rule()
             rule.src = ip
-            #rule.protocol = 'tcp'
             rule.create_target('DROP')
-            #rule.create_match('tcp')
             iptc.Chain(iptc.Table(iptc.Table.FILTER), 'INPUT').insert_rule(rule)
             session.commit()
 
