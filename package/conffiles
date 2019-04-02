@@ -1,4 +1,4 @@
+/etc/logban/triggers/ip_ban.conf
 /etc/logban/triggers/sshd.conf
 /etc/logban/filters/sshd.conf
 /etc/logban/logban.conf
-
