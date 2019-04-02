@@ -1,3 +1,4 @@
+import iptc
 import json
 import sqlalchemy.orm
 
@@ -6,10 +7,14 @@ from datetime import datetime, timedelta
 from logban.core import register_action, publish_event, DBBase, DBSession, wrap_list
 
 
+def _trigger_key(id, params):
+    return json.dumps({'i': id, 'j': params}, sort_keys=True)
+
+
 class GroupCounterTrigger(object):
 
     @staticmethod
-    def configure(trigger_id, group_on, result_event, trigger_events=None, reset_events=None,
+    def configure(trigger_id, result_event, group_on=None, trigger_events=None, reset_events=None,
                   count=5, timeout='2592000', **ignored_params):
         new_trigger = GroupCounterTrigger(trigger_id, wrap_list(group_on), result_event, count, int(timeout))
         for event in wrap_list(trigger_events):
@@ -26,7 +31,7 @@ class GroupCounterTrigger(object):
 
     def trigger(self, event_name, time, lines, **params):
         relevant_params = self._relevant_params(params)
-        trigger_key = self._trigger_key(relevant_params)
+        trigger_key = _trigger_key(self.trigger_id, relevant_params)
         with DBSession() as session:
             status = session.query(_DBTriggerStatus).get(trigger_key)
             if status is None:
@@ -43,9 +48,9 @@ class GroupCounterTrigger(object):
                 status.lines.append(_DBTriggerStatusLine(log=log, time=line_time, line=line))
             status.times.append(_DBTriggerStatusTime(time=time))
             expiry_time = status.last_time - self.timeout
-            for time in status.times:
-                if time.time < expiry_time:
-                    status.times.remove(time)
+            for previous_trigger_time in status.times:
+                if previous_trigger_time.time < expiry_time:
+                    status.times.remove(previous_trigger_time)
                     status.trigger_count -= 1
             if status.trigger_count >= self.count:
                 publish_event(
@@ -54,8 +59,9 @@ class GroupCounterTrigger(object):
                     time=time,
                     **relevant_params
                 )
-
-            session.add(status)
+                session.delete(status)
+            else:
+                session.add(status)
             session.commit()
 
     def reset(self, event_name, time, lines, **params):
@@ -66,9 +72,49 @@ class GroupCounterTrigger(object):
     def _relevant_params(self, params):
         return {key: params[key] for key in self.group_on}
 
-    def _trigger_key(self, params):
-        return json.dumps({ 'i': self.trigger_id, 'j': params}, sort_keys=True)
 
+class BanTrigger(object):
+
+    @staticmethod
+    def configure(trigger_id, trigger_events=None, ban_time=2592000, probation_time=2592000,
+                  repeat_scale=2, ip_param='rhost', **ignored_params):
+        new_trigger = BanTrigger(trigger_id, ban_time, probation_time, repeat_scale, ip_param)
+        for event in wrap_list(trigger_events):
+            register_action(event, new_trigger.trigger)
+
+    def __init__(self, trigger_id, ban_time, probation_time, repeat_scale, ip_param):
+        self.trigger_id = trigger_id
+        self.ban_time = timedelta(seconds=int(ban_time))
+        self.probation_time = timedelta(seconds=int(probation_time))
+        self.repeat_scale = repeat_scale
+        self.ip_param = ip_param
+
+    def trigger(self, event, time, lines, **params):
+        ip = params[self.ip_param]
+        with DBSession() as session:
+            trigger_key = _trigger_key(self.trigger_id, ip)
+            status = session.query(_DBTriggerStatus).get(trigger_key)
+            if status is None:
+                status = _DBTriggerStatus(
+                    status_key=trigger_key,
+                    trigger_count=1,
+                    last_time=time,
+                    first_time=time
+                )
+            else:
+                status.last_time=time
+                status.trigger_count += 1
+            for log, line_time, line in lines:
+                status.lines.append(_DBTriggerStatusLine(log=log, time=line_time, line=line))
+            status.times.append(_DBTriggerStatusTime(time=time))
+            session.add(status)
+            rule = iptc.Rule()
+            rule.src = ip
+            #rule.protocol = 'tcp'
+            rule.create_target('DROP')
+            #rule.create_match('tcp')
+            iptc.Chain(iptc.Table(iptc.Table.FILTER), 'INPUT').insert_rule(rule)
+            session.commit()
 
 
 class _DBTriggerStatus(DBBase):
@@ -76,9 +122,9 @@ class _DBTriggerStatus(DBBase):
     __tablename__ = 'trigger_status'
 
     status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    trigger_count = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
-    last_time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
-    first_time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
+    first_time = sqlalchemy.Column(sqlalchemy.DateTime)
+    last_time = sqlalchemy.Column(sqlalchemy.DateTime)
+    trigger_count = sqlalchemy.Column(sqlalchemy.Integer)
     lines = sqlalchemy.orm.relationship('_DBTriggerStatusLine')
     times = sqlalchemy.orm.relationship('_DBTriggerStatusTime')
 
@@ -114,5 +160,6 @@ class _DBTriggerStatusLine(DBBase):
 
 
 trigger_types = {
-    'group_counter': GroupCounterTrigger.configure
+    'group_counter': GroupCounterTrigger.configure,
+    'ip_ban': BanTrigger.configure,
 }
