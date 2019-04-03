@@ -68,12 +68,16 @@ class FileMonitor(object):
         self.file = None
         self.filters = []
         with DBSession() as session:
-            self.status_entry = session.query(_DBLogStatus).get(file_path)
-            if self.status_entry is None:
-                self.status_entry = _DBLogStatus(path=file_path, position=0)
-                session.add(self.status_entry)
+            status_entry = session.query(_DBLogStatus).get(file_path)
+            if status_entry is None:
+                status_entry = _DBLogStatus(path=file_path, position=0)
+                session.add(status_entry)
                 session.commit()
-        self.open(self.status_entry.position)
+                position = 0
+            else:
+                position = status_entry.position
+            self.status_entry = status_entry
+        self.open(position)
 
     def get_pos(self):
         return self.file.tell()

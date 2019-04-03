@@ -1,6 +1,7 @@
 import os.path
 import sqlalchemy.orm
 import sqlalchemy.ext.declarative
+import threading
 
 ##########
 # Events #
@@ -35,37 +36,42 @@ def publish_event(event, **details):
 DBBase = sqlalchemy.ext.declarative.declarative_base()
 
 
-# This class only works if single threaded!
-# Forks must not happen with open sessions and pthreads are completely out
 class DBSession:
 
-    __db_engine = None
-    _db_session = None
-    __open_new_session = None
-    __ref_count = 0
+    _db_engine = None
+    _db_session_dict = {}
+    _open_new_session = None
+    _ref_count = 0
 
     def __init__(self):
         self.is_commit = False
+        self._parent = None
+        self._db_session = None
 
     def __enter__(self):
-        if DBSession.__ref_count == 0:
-            DBSession._db_session = DBSession.__open_new_session()
-        DBSession.__ref_count += 1
-        DBSession._db_session.begin_nested()
+        thread_id = threading.get_ident()
+        self._parent = DBSession._db_session_dict.get(thread_id, None)
+        if self._parent is None:
+            self._db_session = DBSession._open_new_session()
+        else:
+            self._db_session = self._parent._db_session
+        self._db_session.begin_nested()
+        DBSession._db_session_dict[thread_id] = self
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.is_commit:
-            DBSession._db_session.commit()
+            self._db_session.commit()
         else:
-            DBSession._db_session.rollback()
-        DBSession.__ref_count -= 1
-        if DBSession.__ref_count == 0:
-            DBSession._db_session.close()
-            DBSession._db_session = None
+            self._db_session.rollback()
+        if self._parent is None:
+            self._db_session.close()
+            del DBSession._db_session_dict[threading.get_ident()]
+        else:
+            DBSession._db_session_dict[threading.get_ident()] = self._parent
 
     def __getattr__(self, name):
-        return getattr(DBSession._db_session, name)
+        return getattr(self._db_session, name)
 
     def commit(self):
         self.is_commit = True
@@ -77,9 +83,9 @@ class DBSession:
     def initialize_db(path='/var/lib/logban/logban.sqlite3', **excess_args):
         global DBBase
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        DBSession.__db_engine = sqlalchemy.create_engine('sqlite:///%s' % path, echo=True)
-        DBBase.metadata.create_all(DBSession.__db_engine)
-        DBSession.__open_new_session = sqlalchemy.orm.sessionmaker(bind=DBSession.__db_engine)
+        DBSession._db_engine = sqlalchemy.create_engine('sqlite:///%s' % path, echo=True)
+        DBBase.metadata.create_all(DBSession._db_engine)
+        DBSession._open_new_session = sqlalchemy.orm.sessionmaker(bind=DBSession._db_engine)
 
 
 ########
