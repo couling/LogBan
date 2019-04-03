@@ -1,9 +1,12 @@
 import os.path
 import pyinotify
 import sqlalchemy
+import logging
 
 from logban.core import DBBase, DBSession
 
+
+_logger = logging.getLogger(__name__)
 
 _notify_events = pyinotify.IN_CREATE | pyinotify.IN_DELETE | pyinotify.IN_MODIFY
 _wd_dict = {}
@@ -109,12 +112,16 @@ class FileMonitor(object):
     def open(self, position=0):
         self.close()
         if os.path.isfile(self.file_path):
+            _logger.info("Opening %s at position %d", self.file_path, position)
             self.file = open(self.file_path, 'r')
             if position != 0:
                 self.file.seek(position, 0)
+        else:
+            _logger.warning("File does not exist %s", self.file_path)
 
     def close(self):
         if self.file is not None:
+            _logger.info("Closing %s", self.file_path)
             self.file.close()
             self.file = None
 

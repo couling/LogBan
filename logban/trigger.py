@@ -1,11 +1,14 @@
 import iptc
 import json
 import sqlalchemy.orm
+import logging
 
 from datetime import datetime, timedelta
 
 from logban.core import register_action, publish_event, DBBase, DBSession, wrap_list
 
+
+_logger = logging.getLogger(__name__)
 
 def _trigger_key(id, params):
     return json.dumps({'i': id, 'j': params}, sort_keys=True)
@@ -49,6 +52,8 @@ class GroupCounterTrigger(object):
                 if previous_trigger_time.time < expiry_time:
                     status.times.remove(previous_trigger_time)
                     status.trigger_count -= 1
+            _logger.info("Trigger %s: Strike %d of %d for %s", self.trigger_id,
+                          status.trigger_count, self.count, relevant_params)
             if status.trigger_count >= self.count:
                 publish_event(
                     self.result_event,
@@ -108,10 +113,15 @@ class BanTrigger(object):
                 status.lines.append(_DBTriggerStatusLine(log=log, time=line_time, line=line))
             status.times.append(_DBTriggerStatusTime(time=time))
             session.add(status)
-            rule = iptc.Rule()
-            rule.src = ip
-            rule.create_target('DROP')
-            iptc.Chain(iptc.Table(iptc.Table.FILTER), 'INPUT').insert_rule(rule)
+            _logger.log(logging.NOTICE, "%s: Banning %s", self.trigger_id, ip)
+            try:
+                rule = iptc.Rule()
+                rule.src = ip
+                rule.create_target('DROP')
+                iptc.Chain(iptc.Table(iptc.Table.FILTER), 'INPUT').insert_rule(rule)
+            except iptc.ip4tc.IPTCError as e:
+                _logger.error("Failed to ban %s because %s", ip, str(e))
+
             session.commit()
 
 

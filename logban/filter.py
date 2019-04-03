@@ -1,9 +1,12 @@
 import re
+import logging
 
 from datetime import datetime, timedelta
 
 from logban.core import publish_event
 
+
+_logger = logging.getLogger(__name__)
 
 class LogFilter(object):
 
@@ -12,11 +15,15 @@ class LogFilter(object):
         self.source_pattern = pattern
         self.pattern = re.compile(pattern)
         self.log_path = log_path
-        self.pattern = re.compile(pattern.format(**named_groups))
+        actual_pattern = pattern.format(**named_groups)
+        _logger.debug("Pattern %s", pattern)
+        _logger.debug("Becomes %s", actual_pattern)
+        self.pattern = re.compile(actual_pattern)
 
     def filter_line(self, line):
         found = self.pattern.search(line)
         if found is not None:
+            _logger.debug("Matched log %s line: %s", self.log_path, line)
             params = found.groupdict()
             for processor in param_processors:
                 processor(params)

@@ -62,9 +62,11 @@ def load_config_triggers(config, triggers=None):
 
 
 def build_daemon(core_config, filter_config, trigger_config):
-    global file_monitors
+    # Configure logging
+    logban.core.initialize_logging(**core_config.get('log', default={}))
+
     # Open database connection
-    logban.core.DBSession.initialize_db(**core_config.get('db', default={}))
+    logban.core.initialize_db(**core_config.get('db', default={}))
 
     # Setup file monitors and filters
     for file_path, filter_conf in filter_config.items():
