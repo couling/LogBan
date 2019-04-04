@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os.path
 import sqlalchemy.orm
@@ -11,6 +12,20 @@ import threading
 ##########
 
 event_actions = {}
+main_loop = asyncio.new_event_loop()
+
+def _fire_event(event, params):
+        _logger.debug("Event %s: %s", event, params)
+        try:
+            event_action_list = event_actions[event]
+            for action in event_action_list:
+                try:
+                    action(event, **params)
+                except:
+                    _logger.exception("Failure with event %s", event)
+        except KeyError:
+            _logger.warning("Event %s has been published with no listners, this warning will not be repeated", event)
+            event_actions[event] = []
 
 
 def register_action(event, action):
@@ -20,17 +35,8 @@ def register_action(event, action):
         event_actions[event] = [action]
 
 
-def publish_event(event, **details):
-    _logger.debug("Event %s: %s", event, details)
-    try:
-        actions = event_actions[event]
-    except KeyError:
-        # Avoid excessive exceptions, If an event is published then assume it will be again and create an event
-        # even if there are no listeners
-        actions = []
-        event_actions[event] = actions
-    for action in actions:
-        action(event, **details)
+def publish_event(event, **params):
+    main_loop.call_soon_threadsafe(_fire_event, event, params)
 
 
 ############

@@ -2,8 +2,9 @@ import os.path
 import pyinotify
 import sqlalchemy
 import logging
+import threading
 
-from logban.core import DBBase, DBSession
+from logban.core import DBBase, DBSession, main_loop
 
 
 _logger = logging.getLogger(__name__)
@@ -12,15 +13,21 @@ _notify_events = pyinotify.IN_CREATE | pyinotify.IN_DELETE | pyinotify.IN_MODIFY
 _wd_dict = {}
 _wm = pyinotify.WatchManager()
 
+_loop_scheduled = False
+
 file_monitors = {}
 
 
 def register_file(path):
     if path not in file_monitors:
-        file_monitors[path] = FileMonitor(path)
+        new_monitor = FileMonitor(path)
+        file_monitors[path] = new_monitor
         directory = os.path.dirname(path)
         if directory not in _wd_dict:
             _wd_dict[directory] = _wm.add_watch(directory, _notify_events, rec=True)
+        if not _loop_scheduled:
+            _loo_loop_scheduled=True
+            main_loop.call_soon(_file_monitor_loop)
 
 
 def unregister_file(path):
@@ -37,11 +44,14 @@ def unregister_file(path):
             _wm.del_watch(_wd_dict[directory])
 
 
-def file_monitor_loop():
+def _file_monitor_loop():
+    _logger.info("Starting File Monitors")
     for log, watcher in file_monitors.items():
+        _logger.info("Initializing %s", watcher.file_path)
         watcher.read_new_lines(auto_reset=False)
     notifier = pyinotify.Notifier(_wm, _INotifyEvent())
-    notifier.loop()
+    thread = threading.Thread(target=notifier.loop)
+    thread.start()
 
 
 def close_monitors():
