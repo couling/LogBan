@@ -1,0 +1,13 @@
+[Unit]
+Description=Logban System Security Monitor
+Documentation=man:logban(8) man:logban_config(5)
+After=network.target
+
+[Service]
+ExecStart=/usr/sbin/logban
+KillMode=process
+Restart=on-failure
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

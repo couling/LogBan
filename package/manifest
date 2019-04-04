@@ -35,13 +35,15 @@
 source  ..
  
 control package/control
-file    package/conffiles     DEBIAN/conffiles                                644
+file    package/conffiles            DEBIAN/conffiles                                  644
+file    package/post_install_script  DEBIAN/postinst                                   755
+file    package/pre_remove_script    DEBIAN/prerm                                      755
 
-file    logban.py             /usr/sbin/logban                                755
-file    logban                /usr/lib/python3/dist-packages/logban           644
-file    LICENCE.md            /usr/lib/python3/dist-packages/logban/LICENCE   644
-file    package/config        /etc/logban                                     644
+file    logban.py                    /usr/sbin/logban                                  755
+file    logban                       /usr/lib/python3/dist-packages/logban             644
+file    LICENCE.md                   /usr/lib/python3/dist-packages/logban/LICENCE     644
 
-
-
+file    package/config               /etc/logban                                       644
+file    package/systemd.service      /lib/systemd/system/logban.service                644
+file    package/logrotate.conf       /etc/logrotate.d/logban                           644
 
