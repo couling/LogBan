@@ -52,7 +52,7 @@ class GroupCounterTrigger(object):
                 if previous_trigger_time.time < expiry_time:
                     status.times.remove(previous_trigger_time)
                     status.trigger_count -= 1
-            _logger.info("Trigger %s: Strike %d of %d for %s", self.trigger_id,
+            _logger.info("%s: Strike %d of %d for %s", self.trigger_id,
                           status.trigger_count, self.count, relevant_params)
             if status.trigger_count >= self.count:
                 publish_event(
@@ -70,6 +70,7 @@ class GroupCounterTrigger(object):
             session.commit()
 
     def reset(self, event_name, time, lines, **params):
+        _logger.debug("%s: reset to 0 %s", self.trigger_id, self._relevant_params(params))
         trigger_key = _trigger_key(self.trigger_id, self._relevant_params(params))
         with DBSession() as session:
             session.query(_DBTriggerStatus).filter_by(status_key=trigger_key).delete()
@@ -100,29 +101,38 @@ class BanTrigger(object):
             trigger_key = _trigger_key(self.trigger_id, ip)
             status = session.query(_DBTriggerStatus).get(trigger_key)
             if status is None:
+                ban_now = True
                 status = _DBTriggerStatus(
                     status_key=trigger_key,
-                    trigger_count=1,
-                    last_time=time,
+                    trigger_count=0,
                     first_time=time
                 )
             else:
+                ban_now = status.status != 'BAN'
                 status.last_time=time
                 status.trigger_count += 1
             for log, line_time, line in lines:
                 status.lines.append(_DBTriggerStatusLine(log=log, time=line_time, line=line))
-            status.times.append(_DBTriggerStatusTime(time=time))
+            if ban_now:
+                status.status = 'BAN'
+                status.last_time = time
+                status.trigger_count += 1
+                status.times.append(_DBTriggerStatusTime(time=time))
+                _logger.log(logging.NOTICE, "%s: Banning %s", self.trigger_id, ip)
+                self.ban_ip(ip)
+            else:
+                _logger.debug("%s: Skipping duplicate ban: %s", self.trigger_id, ip)
             session.add(status)
-            _logger.log(logging.NOTICE, "%s: Banning %s", self.trigger_id, ip)
-            try:
-                rule = iptc.Rule()
-                rule.src = ip
-                rule.create_target('DROP')
-                iptc.Chain(iptc.Table(iptc.Table.FILTER), 'INPUT').insert_rule(rule)
-            except iptc.ip4tc.IPTCError as e:
-                _logger.error("Failed to ban %s because %s", ip, str(e))
-
             session.commit()
+
+    def ban_ip(self, ip):
+        try:
+            rule = iptc.Rule()
+            rule.src = ip
+            rule.create_target('DROP')
+            iptc.Chain(iptc.Table(iptc.Table.FILTER), 'INPUT').insert_rule(rule)
+        except iptc.ip4tc.IPTCError as e:
+            _logger.error("Failed to ban %s because %s", ip, str(e))
 
 
 class _DBTriggerStatus(DBBase):
@@ -130,6 +140,7 @@ class _DBTriggerStatus(DBBase):
     __tablename__ = 'trigger_status'
 
     status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    status = sqlalchemy.Column(sqlalchemy.String)
     first_time = sqlalchemy.Column(sqlalchemy.DateTime)
     last_time = sqlalchemy.Column(sqlalchemy.DateTime)
     trigger_count = sqlalchemy.Column(sqlalchemy.Integer)
