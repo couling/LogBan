@@ -79,4 +79,4 @@ def build_daemon(core_config, filter_config, trigger_config):
     # Setup triggers
     for trigger_id, config in trigger_config.items():
         builder = logban.trigger.trigger_types[config['type']]
-        builder(trigger_id=trigger_id, **config)
+        builder(trigger_id=trigger_id, **{key: value for key, value in config.items() if key != 'type'})

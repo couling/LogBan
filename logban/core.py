@@ -25,7 +25,7 @@ def _fire_event(event, params):
                 except:
                     _logger.exception("Failure with event %s", event)
         except KeyError:
-            _logger.warning("Event %s has been published with no listners, this warning will not be repeated", event)
+            _logger.warning("Published event %s has no listeners, this warning will not be repeated", event)
             event_listeners[event] = []
 
 
@@ -127,18 +127,18 @@ def initialize_logging(level='INFO', log_path=None, date_format='%Y-%m-%d %H:%M:
     logging.NOTICE = logging.ERROR + 5
     logging._levelToName[logging.NOTICE] = 'NOTICE'
     logging._nameToLevel['NOTICE'] = logging.NOTICE
-    format = "%(asctime)s %(name)s [%(levelname)-7.7s]  %(message)s"
+    line_format = "%(asctime)s %(name)s [%(levelname)-7.7s]  %(message)s"
     handlers = []
-    if log_path != None:
+    if log_path is not None:
         handlers.append(logging.FileHandler(filename=log_path))
     else:
         handlers.append(logging.StreamHandler(stream=sys.stdout))
 
-    logging.basicConfig(level=logging._nameToLevel[level], format=format,
+    logging.basicConfig(level=logging._nameToLevel[level], format=line_format,
                         handlers=handlers, datefmt=date_format)
 
     if fine_grained_level is not None:
         for key, value in fine_grained_level.items():
-            logging.getLogger(key).level=logging._nameToLevel[value]
+            logging.getLogger(key).level = logging._nameToLevel[value]
 
     _logger.log(logging.NOTICE, "Logging Started")

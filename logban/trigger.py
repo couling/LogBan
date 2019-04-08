@@ -34,12 +34,11 @@ def exec_command(args, log_level=logging.ERROR, expect_result=None):
     return result
 
 
-
 class GroupCounterTrigger(object):
 
     @staticmethod
     def configure(trigger_id, result_event, group_on=None, trigger_events=None, reset_events=None,
-                  count=5, timeout='2592000', **ignored_params):
+                  count=5, timeout='2592000'):
         new_trigger = GroupCounterTrigger(trigger_id, wrap_list(group_on), result_event, count, int(timeout))
         for event in wrap_list(trigger_events):
             register_action(event, new_trigger.trigger)
@@ -53,7 +52,7 @@ class GroupCounterTrigger(object):
         self.count = int(count)
         self.timeout = timedelta(seconds=int(timeout))
 
-    def trigger(self, event_name, time, lines, **params):
+    def trigger(self, _, time, lines, **params):
         relevant_params = {key: params[key] for key in self.group_on}
         trigger_key = _trigger_key(relevant_params)
         with DBSession() as session:
@@ -75,7 +74,7 @@ class GroupCounterTrigger(object):
                     status.times.remove(previous_trigger_time)
                     status.trigger_count -= 1
             _logger.info("%s: Strike %d of %d for %s", self.trigger_id,
-                          status.trigger_count, self.count, relevant_params)
+                         status.trigger_count, self.count, relevant_params)
             if status.trigger_count >= self.count:
                 publish_event(
                     self.result_event,
@@ -83,7 +82,9 @@ class GroupCounterTrigger(object):
                     time=time,
                     **relevant_params
                 )
-                session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id, status_key=trigger_key).delete()
+                session.query(_DBTriggerStatus).filter_by(
+                    trigger_id=self.trigger_id, status_key=trigger_key
+                ).delete()
             else:
                 status.times.append(_DBTriggerStatusTime(time=time))
                 for log, line_time, line in lines:
@@ -91,12 +92,14 @@ class GroupCounterTrigger(object):
                 session.add(status)
             session.commit()
 
-    def reset(self, event_name, time, lines, **params):
+    def reset(self, _, **params):
         relevant_params = {key: params[key] for key in self.group_on}
         _logger.debug("%s: reset to 0 %s", self.trigger_id, relevant_params)
         trigger_key = _trigger_key(relevant_params)
         with DBSession() as session:
-            session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id, status_key=trigger_key).delete()
+            session.query(_DBTriggerStatus).filter_by(
+                trigger_id=self.trigger_id, status_key=trigger_key
+            ).delete()
 
 
 class AbstractBanTrigger(ABC):
@@ -113,7 +116,7 @@ class AbstractBanTrigger(ABC):
             for ban in session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id):
                 yield _decode_trigger_key(ban.status_key)
 
-    def trigger(self, event, time, lines, **params):
+    def trigger(self, _, time, lines, **params):
         relevant_params = {key: params[key] for key in self.ban_params}
         trigger_key = _trigger_key(relevant_params)
         with DBSession() as session:
@@ -128,7 +131,7 @@ class AbstractBanTrigger(ABC):
                 )
             else:
                 ban_now = status.status != 'BAN'
-                status.last_time=time
+                status.last_time = time
                 status.trigger_count += 1
             for log, line_time, line in lines:
                 status.lines.append(_DBTriggerStatusLine(log=log, time=line_time, line=line))
@@ -159,7 +162,7 @@ class IptablesBanTrigger(AbstractBanTrigger):
 
     @staticmethod
     def configure(trigger_id, trigger_events=None, ban_time=2592000, probation_time=2592000,
-                  repeat_scale=2, **ignored_params):
+                  repeat_scale=2):
         new_trigger = IptablesBanTrigger(trigger_id, ban_time, probation_time, repeat_scale)
         for event in wrap_list(trigger_events):
             register_action(event, new_trigger.trigger)
@@ -171,7 +174,9 @@ class IptablesBanTrigger(AbstractBanTrigger):
 
     def _initialize(self):
         for iptables in ['iptables', 'ip6tables']:
-            result = exec_command([iptables, '-C', 'INPUT', '-j', self.iptables_chain], log_level=logging.DEBUG)
+            result = exec_command(
+                [iptables, '-C', 'INPUT', '-j', self.iptables_chain],
+                log_level=logging.DEBUG)
             if result != 0:
                 exec_command([iptables, '-N', self.iptables_chain], expect_result=0)
                 exec_command([iptables, '-A', 'INPUT', '-j', self.iptables_chain], expect_result=0)
@@ -184,10 +189,14 @@ class IptablesBanTrigger(AbstractBanTrigger):
             iptables = 'iptables'
         else:
             iptables = 'ip6tables'
-        if exec_command([iptables, '-C', self.iptables_chain, '-s', rhost, '-j', 'DROP'], log_level=logging.DEBUG) == 0:
+        if exec_command(
+                [iptables, '-C', self.iptables_chain, '-s', rhost, '-j', 'DROP'],
+                log_level=logging.DEBUG) == 0:
             _logger.warning("iptables ban already exists for %s", rhost)
         else:
-            exec_command([iptables, '-I', self.iptables_chain, '1', '-s', rhost, '-j', 'DROP'], expect_result=0)
+            exec_command(
+                [iptables, '-I', self.iptables_chain, '1', '-s', rhost, '-j', 'DROP'],
+                expect_result=0)
 
     def _unban(self, rhost):
         if self.ipv4_re.match(rhost):
@@ -223,7 +232,7 @@ class _DBTriggerStatusTime(DBBase):
         ['trigger_id', 'status_key'],
         ['trigger_status.trigger_id', 'trigger_status.status_key'],
         ondelete="CASCADE"
-    ),{})
+    ), {})
 
 
 _trigger_times_index = sqlalchemy.Index(

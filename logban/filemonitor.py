@@ -32,9 +32,9 @@ def register_file(path):
 
 def unregister_file(path):
     if path in file_monitors:
-        file_moitor = file_monitors[path]
+        file_monitor = file_monitors[path]
         del file_monitors[path]
-        file_moitor.close()
+        file_monitor.close()
         directory = os.path.dirname(path)
         # Check for other file monitors in the same directory before removing the directory
         for other_path, _ in file_monitors:
