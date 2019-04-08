@@ -21,17 +21,17 @@ def load_config_files(config_path='/etc/logban'):
     global db_engine
     # Load core config
     core_config = ConfigObj(os.path.join(config_path, 'logban.conf'))
-    filter_config = load_config_filters(config_path)
-    trigger_config = load_config_triggers(config_path)
+    filter_config = load_config_filters(os.path.join(config_path, 'filters'))
+    trigger_config = load_config_objects(os.path.join(config_path, 'triggers'))
     return core_config, filter_config, trigger_config
 
 
-def load_config_filters(config):
+def load_config_filters(config_path, filters=None):
     filter_re = re.compile(r'^ *(?P<log_path>[^#|]*[^#| ]+) *\| *(?P<event>[^ |]+) *\| *(?P<pattern>.+) *$')
-    config = os.path.join(config, 'filters')
-    filters = {}
-    for filter_path in os.listdir(config):
-        filter_path = os.path.join(config, filter_path)
+    if filters is None:
+        filters = {}
+    for filter_path in os.listdir(config_path):
+        filter_path = os.path.join(config_path, filter_path)
         if filter_path.endswith('.conf'):
             with open(filter_path) as filter_file:
                 for line in filter_file:
@@ -45,10 +45,9 @@ def load_config_filters(config):
     return filters
 
 
-def load_config_triggers(config, triggers=None):
+def load_config_objects(config, triggers=None):
     if triggers is None:
         triggers = {}
-    config = os.path.join(config, 'triggers')
     for trigger_path in os.listdir(config):
         trigger_path = os.path.join(config, trigger_path)
         if trigger_path.endswith('.conf'):

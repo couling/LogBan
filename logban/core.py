@@ -11,13 +11,14 @@ import threading
 # Events #
 ##########
 
-event_actions = {}
+event_listeners = {}
 main_loop = asyncio.new_event_loop()
+
 
 def _fire_event(event, params):
         _logger.debug("Event %s: %s", event, params)
         try:
-            event_action_list = event_actions[event]
+            event_action_list = event_listeners[event]
             for action in event_action_list:
                 try:
                     action(event, **params)
@@ -25,14 +26,14 @@ def _fire_event(event, params):
                     _logger.exception("Failure with event %s", event)
         except KeyError:
             _logger.warning("Event %s has been published with no listners, this warning will not be repeated", event)
-            event_actions[event] = []
+            event_listeners[event] = []
 
 
 def register_action(event, action):
     try:
-        event_actions[event].append(action)
+        event_listeners[event].append(action)
     except KeyError:
-        event_actions[event] = [action]
+        event_listeners[event] = [action]
 
 
 def publish_event(event, **params):
@@ -120,12 +121,13 @@ def wrap_list(value):
 
 _logger = logging.getLogger(__name__)
 
+
 def initialize_logging(level='INFO', log_path=None, date_format='%Y-%m-%d %H:%M:%S',
                        fine_grained_level=None):
     logging.NOTICE = logging.ERROR + 5
     logging._levelToName[logging.NOTICE] = 'NOTICE'
     logging._nameToLevel['NOTICE'] = logging.NOTICE
-    format = "%(asctime)s %(name)s [%(levelname)-6.6s]  %(message)s"
+    format = "%(asctime)s %(name)s [%(levelname)-7.7s]  %(message)s"
     handlers = []
     if log_path != None:
         handlers.append(logging.FileHandler(filename=log_path))
@@ -140,4 +142,3 @@ def initialize_logging(level='INFO', log_path=None, date_format='%Y-%m-%d %H:%M:
             logging.getLogger(key).level=logging._nameToLevel[value]
 
     _logger.log(logging.NOTICE, "Logging Started")
-
