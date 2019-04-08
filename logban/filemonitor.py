@@ -63,15 +63,15 @@ class _INotifyEvent(pyinotify.ProcessEvent):
 
     def process_IN_CREATE(self, event):
         if not event.dir and event.pathname in file_monitors:
-            file_monitors[event.pathname].open()
+            main_loop.call_soon_threadsafe(file_monitors[event.pathname].open)
 
     def process_IN_DELETE(self, event):
         if not event.dir and event.pathname in file_monitors:
-            file_monitors[event.pathname].close()
+            main_loop.call_soon_threadsafe(file_monitors[event.pathname].close)
 
     def process_IN_MODIFY(self, event):
         if not event.dir and event.pathname in file_monitors:
-            file_monitors[event.pathname].read_new_lines()
+            main_loop.call_soon_threadsafe(file_monitors[event.pathname].read_new_lines)
 
 
 class FileMonitor(object):
