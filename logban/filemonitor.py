@@ -85,7 +85,6 @@ class FileMonitor(object):
             if status_entry is None:
                 status_entry = _DBLogStatus(path=file_path, position=0)
                 session.add(status_entry)
-                session.commit()
                 position = 0
             else:
                 position = status_entry.position
@@ -117,7 +116,6 @@ class FileMonitor(object):
                     line = ''
             self.status_entry.position = pos
             session.add(self.status_entry)
-            session.commit()
 
     def open(self, position=0):
         self.close()

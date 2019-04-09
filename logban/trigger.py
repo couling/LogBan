@@ -65,6 +65,7 @@ class GroupCounterTrigger(object):
                     last_time=time,
                     first_time=time
                 )
+                session.add(status)
             else:
                 status.last_time = time
                 status.trigger_count += 1
@@ -89,8 +90,6 @@ class GroupCounterTrigger(object):
                 status.times.append(_DBTriggerStatusTime(time=time))
                 for log, line_time, line in lines:
                     status.lines.append(_DBTriggerStatusLine(log=log, time=line_time, line=line))
-                session.add(status)
-            session.commit()
 
     def reset(self, _, **params):
         relevant_params = {key: params[key] for key in self.group_on}
@@ -108,8 +107,9 @@ class AbstractBanTrigger(ABC):
         self.trigger_id = trigger_id
         self.ban_time = timedelta(seconds=int(ban_time))
         self.probation_time = timedelta(seconds=int(probation_time))
-        self.repeat_scale = repeat_scale
+        self.repeat_scale = int(repeat_scale)
         self.ban_params = ban_params
+        self.time_event = ".timer." + self.trigger_id
 
     def all_bans(self):
         with DBSession() as session:
@@ -129,6 +129,7 @@ class AbstractBanTrigger(ABC):
                     trigger_count=0,
                     first_time=time
                 )
+                session.add(status)
             else:
                 ban_now = status.status != 'BAN'
                 status.last_time = time
@@ -142,10 +143,27 @@ class AbstractBanTrigger(ABC):
                 status.times.append(_DBTriggerStatusTime(time=time))
                 _logger.log(logging.NOTICE, "%s: Banning %s", self.trigger_id, trigger_key)
                 self._ban(**relevant_params)
+                probation_time = time + (self.ban_time * (self.repeat_scale ** (status.trigger_count - 1)))
+                publish_event(self.time_event, event_time=probation_time, **relevant_params)
             else:
                 _logger.debug("%s: Skipping duplicate ban: %s", self.trigger_id, trigger_key)
-            session.add(status)
-            session.commit()
+
+    def timer_action(self, event, event_time, **params):
+        trigger_key = _trigger_key(params)
+        with DBSession() as session:
+            status = session.query(_DBTriggerStatus).get((self.trigger_id, trigger_key))
+            if status is None:
+                return
+            if status.status == 'BAN':
+                _logger.log(logging.NOTICE, "%s: Probation %s", self.trigger_id, trigger_key)
+                self._unban(**params)
+                status.status = 'PROBATION'
+                publish_event(event, event_time=event_time + self.probation_time, **params)
+            elif status.status == 'PROBATION':
+                _logger.log(logging.NOTICE, "%s: Clear %s", self.trigger_id, trigger_key)
+                session.query(_DBTriggerStatus).filter_by(
+                    trigger_id=self.trigger_id, status_key=trigger_key
+                ).delete()
 
     @abstractmethod
     def _ban(self, **params):
@@ -166,13 +184,15 @@ class IptablesBanTrigger(AbstractBanTrigger):
         new_trigger = IptablesBanTrigger(trigger_id, ban_time, probation_time, repeat_scale)
         for event in wrap_list(trigger_events):
             register_action(event, new_trigger.trigger)
-        main_loop.call_soon(new_trigger._initialize)
+        register_action(new_trigger.time_event, new_trigger.timer_action)
+        new_trigger._initialize()
 
     def __init__(self, trigger_id, ban_time, probation_time, repeat_scale):
-        super().__init__(trigger_id, ban_time, repeat_scale, probation_time, ['rhost'])
+        super().__init__(trigger_id, ban_time, probation_time, repeat_scale, ['rhost'])
         self.iptables_chain = 'logban-' + self.trigger_id
 
     def _initialize(self):
+        _logger.info("%s: Initializing", self.trigger_id)
         for iptables in ['iptables', 'ip6tables']:
             result = exec_command(
                 [iptables, '-C', 'INPUT', '-j', self.iptables_chain],
@@ -192,7 +212,7 @@ class IptablesBanTrigger(AbstractBanTrigger):
         if exec_command(
                 [iptables, '-C', self.iptables_chain, '-s', rhost, '-j', 'DROP'],
                 log_level=logging.DEBUG) == 0:
-            _logger.warning("iptables ban already exists for %s", rhost)
+            _logger.warning("%s: ban already exists for %s", self.trigger_id, rhost)
         else:
             exec_command(
                 [iptables, '-I', self.iptables_chain, '1', '-s', rhost, '-j', 'DROP'],
@@ -203,7 +223,7 @@ class IptablesBanTrigger(AbstractBanTrigger):
             iptables = 'iptables'
         else:
             iptables = 'ip6tables'
-        exec_command([iptables, '-D', self.iptables_chain, '1', '-s', rhost, '-j', 'DROP'], expect_result=0)
+        exec_command([iptables, '-D', self.iptables_chain, '-s', rhost, '-j', 'DROP'])
 
 
 class _DBTriggerStatus(DBBase):

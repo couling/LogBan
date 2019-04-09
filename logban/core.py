@@ -1,3 +1,4 @@
+from datetime import datetime
 import asyncio
 import logging
 import os.path
@@ -5,39 +6,7 @@ import sqlalchemy.orm
 import sqlalchemy.ext.declarative
 import sys
 import threading
-
-
-##########
-# Events #
-##########
-
-event_listeners = {}
-main_loop = asyncio.new_event_loop()
-
-
-def _fire_event(event, params):
-        _logger.debug("Event %s: %s", event, params)
-        try:
-            event_action_list = event_listeners[event]
-            for action in event_action_list:
-                try:
-                    action(event, **params)
-                except:
-                    _logger.exception("Failure with event %s", event)
-        except KeyError:
-            _logger.warning("Published event %s has no listeners, this warning will not be repeated", event)
-            event_listeners[event] = []
-
-
-def register_action(event, action):
-    try:
-        event_listeners[event].append(action)
-    except KeyError:
-        event_listeners[event] = [action]
-
-
-def publish_event(event, **params):
-    main_loop.call_soon_threadsafe(_fire_event, event, params)
+import json
 
 
 ############
@@ -55,7 +24,7 @@ class DBSession:
     _ref_count = 0
 
     def __init__(self):
-        self.is_commit = False
+        self.is_commit = None
         self._parent = None
         self._db_session = None
 
@@ -71,6 +40,8 @@ class DBSession:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.is_commit is None:
+            self.is_commit = exc_type is None
         if self.is_commit:
             self._db_session.commit()
         else:
@@ -100,11 +71,91 @@ def initialize_db(path='/var/lib/logban/logban.sqlite3', **excess_args):
     DBSession._open_new_session = sqlalchemy.orm.sessionmaker(bind=DBSession._db_engine)
 
 
-class _DBLogFilter(logging.Filter):
+##########
+# Events #
+##########
 
-    def __init__(self, logger):
-        super().__init__()
-        self.logger = logger
+event_listeners = {}
+main_loop = asyncio.new_event_loop()
+
+
+def run_main_loop():
+    global _main_loop_thread_id
+    _main_loop_thread_id = threading.get_ident()
+    main_loop.run_forever()
+
+
+def register_action(event, action):
+    try:
+        event_listeners[event].append(action)
+    except KeyError:
+        event_listeners[event] = [action]
+
+
+def publish_event(event, event_time=None, **params):
+    if event_time is not None:
+        _register_event_for_later(event, event_time, params)
+    else:
+        if event_time is not None:
+            params['event_time'] = event_time
+        main_loop.call_soon_threadsafe(_fire_event, event, params)
+
+
+def _register_event_for_later(event, event_time, params):
+    # We only access the database from the main thread
+    # If this isn't the main thread then schedule the same action using the main_loop
+    if threading.get_ident() == _main_loop_thread_id:
+        _logger.debug("Scheduled event %s for %s: %s", event, event_time, params)
+        with DBSession() as session:
+            event_object = _DBFutureEvent(event=event, event_time=event_time, params=json.dumps(params))
+            session.add(event_object)
+    else:
+        main_loop.call_soon_threadsafe(_register_event_for_later, event_time, params)
+
+
+def _fire_event(event, params):
+    _logger.debug("Event %s: %s", event, params)
+    try:
+        event_action_list = event_listeners[event]
+        for action in event_action_list:
+            try:
+                action(event, **params)
+            except:
+                _logger.exception("Failure with event %s", event)
+    except KeyError:
+        _logger.warning("Published event %s has no listeners, this warning will not be repeated", event)
+        event_listeners[event] = []
+
+
+def _fire_timed_events():
+    _logger.debug("Tick... checking timed events")
+    with DBSession() as session:
+        for event_details in session.query(_DBFutureEvent).filter(_DBFutureEvent.event_time <= datetime.now())\
+                .order_by(_DBFutureEvent.event_time):
+            params = json.loads(event_details.params)
+            params['event_time'] = event_details.event_time
+            _fire_event(event_details.event, params)
+            session.delete(event_details)
+    main_loop.call_later(60, _fire_timed_events)
+
+
+main_loop.call_later(0, _fire_timed_events)
+
+
+class _DBFutureEvent(DBBase):
+
+    __tablename__ = 'future_event'
+
+    id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_line_seq'), primary_key=True)
+    event = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    params = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    event_time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
+
+
+_future_event_time_index = sqlalchemy.Index(
+    'future_event_time_index',
+    _DBFutureEvent.event_time
+)
 
 
 ########
