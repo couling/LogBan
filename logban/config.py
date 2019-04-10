@@ -1,14 +1,21 @@
 from configobj import ConfigObj
 from getopt import getopt
+import importlib
 import os
 import os.path
+import pkgutil
 import re
 import sys
+import logging
 
 import logban.core
 import logban.filemonitor
 import logban.filter
 import logban.trigger
+import logban.plugins
+
+
+_logger = logging.getLogger(__name__)
 
 
 def load_config():
@@ -64,6 +71,9 @@ def build_daemon(core_config, filter_config, trigger_config):
     # Configure logging
     logban.core.initialize_logging(**core_config.get('log', default={}))
 
+    # Load plugins here so that logging has been setup, but all else can be modified by plugins
+    load_plugin_modules()
+
     # Open database connection
     logban.core.initialize_db(**core_config.get('db', default={}))
 
@@ -80,3 +90,11 @@ def build_daemon(core_config, filter_config, trigger_config):
     for trigger_id, config in trigger_config.items():
         builder = logban.trigger.trigger_types[config['type']]
         builder(trigger_id=trigger_id, **{key: value for key, value in config.items() if key != 'type'})
+
+def load_plugin_modules(package=logban.plugins):
+    for finder, module_name, is_pacakge in pkgutil.iter_modules(package.__path__):
+        module_name = "%s.%s" % (package.__name__, module_name)
+        _logger.debug("Initializing %s", module_name)
+        module = importlib.import_module(module_name)
+        if is_pacakge:
+            load_plugin_modules(module)
