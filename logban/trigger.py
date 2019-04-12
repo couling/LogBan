@@ -7,7 +7,7 @@ import re
 from abc import ABC, abstractmethod
 from datetime import timedelta
 
-from logban.core import register_action, publish_event, DBBase, DBSession, wrap_list, main_loop
+from logban.core import register_action, publish_event, DBBase, DBSession, wrap_list, deep_merge_dict
 
 
 _logger = logging.getLogger(__name__)
@@ -21,13 +21,13 @@ def _decode_trigger_key(key):
     return json.loads(key)
 
 
-def exec_command(args, log_level=logging.ERROR, expect_result=None):
-    if _logger.isEnabledFor(logging.DEBUG):
-        _logger.debug("Executing: %s", ' '.join(args))
+def exec_command(*args, log_level=logging.ERROR, logger=_logger, expect_result=0):
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Executing: %s", ' '.join(args))
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding='utf-8')
     with process.stdout as output:
         for line in output:
-            _logger.log(log_level, "%s: %s", args[0], line[:-1])
+            logger.log(log_level, "%s: %s", args[0], line[:-1])
     result = process.wait()
     if expect_result is not None and result != expect_result:
         raise subprocess.CalledProcessError(result, ' ', None, None)
@@ -37,12 +37,23 @@ def exec_command(args, log_level=logging.ERROR, expect_result=None):
 class GroupCounterTrigger(object):
 
     @staticmethod
-    def configure(trigger_id, result_event, group_on=None, trigger_events=None, reset_events=None,
-                  count=5, timeout='2592000'):
-        new_trigger = GroupCounterTrigger(trigger_id, wrap_list(group_on), result_event, count, int(timeout))
-        for event in wrap_list(trigger_events):
+    def configure(trigger_id, config):
+        config_full = {
+            'group_on': {},
+            'trigger_events': {},
+            'reset_events': {},
+            'count': '5',
+            'timeout': '2592000'
+        }
+        deep_merge_dict(config_full, config)
+        new_trigger = GroupCounterTrigger(trigger_id,
+                                          wrap_list(config_full['group_on']),
+                                          config_full['result_event'],
+                                          config_full['count'],
+                                          int(config_full['timeout']))
+        for event in wrap_list(config['trigger_events']):
             register_action(event, new_trigger.trigger)
-        for event in wrap_list(reset_events):
+        for event in wrap_list(config['reset_events']):
             register_action(event, new_trigger.reset)
 
     def __init__(self, trigger_id, group_on, result_event, count, timeout):
@@ -179,10 +190,19 @@ class IptablesBanTrigger(AbstractBanTrigger):
     ipv4_re = re.compile(r"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)")
 
     @staticmethod
-    def configure(trigger_id, trigger_events=None, ban_time=2592000, probation_time=2592000,
-                  repeat_scale=2):
-        new_trigger = IptablesBanTrigger(trigger_id, ban_time, probation_time, repeat_scale)
-        for event in wrap_list(trigger_events):
+    def configure(trigger_id, config):
+        config_full = {
+            'trigger_events': None,
+            'ban_time': '2592000',
+            'probation_time': '2592000',
+            'repeat_scale': '2'
+        }
+        deep_merge_dict(config_full, config)
+        new_trigger = IptablesBanTrigger(trigger_id,
+                                         config_full['ban_time'],
+                                         config_full['probation_time'],
+                                         config_full['repeat_scale'])
+        for event in wrap_list(config_full['trigger_events']):
             register_action(event, new_trigger.trigger)
         register_action(new_trigger.time_event, new_trigger.timer_action)
         new_trigger._initialize()
@@ -195,12 +215,13 @@ class IptablesBanTrigger(AbstractBanTrigger):
         _logger.info("%s: Initializing", self.trigger_id)
         for iptables in ['iptables', 'ip6tables']:
             result = exec_command(
-                [iptables, '-C', 'INPUT', '-j', self.iptables_chain],
-                log_level=logging.DEBUG)
+                iptables, '-C', 'INPUT', '-j', self.iptables_chain,
+                log_level=logging.DEBUG,
+                expect_result=None)
             if result != 0:
-                exec_command([iptables, '-N', self.iptables_chain], expect_result=0)
-                exec_command([iptables, '-A', 'INPUT', '-j', self.iptables_chain], expect_result=0)
-                exec_command([iptables, '-A', self.iptables_chain, '-j', 'RETURN'], expect_result=0)
+                exec_command(iptables, '-N', self.iptables_chain)
+                exec_command(iptables, '-A', 'INPUT', '-j', self.iptables_chain)
+                exec_command(iptables, '-A', self.iptables_chain, '-j', 'RETURN')
         for ban in self.all_bans():
             self._ban(**ban)
 
@@ -210,20 +231,18 @@ class IptablesBanTrigger(AbstractBanTrigger):
         else:
             iptables = 'ip6tables'
         if exec_command(
-                [iptables, '-C', self.iptables_chain, '-s', rhost, '-j', 'DROP'],
-                log_level=logging.DEBUG) == 0:
+                iptables, '-C', self.iptables_chain, '-s', rhost, '-j', 'DROP',
+                log_level=logging.DEBUG, expect_result=None) == 0:
             _logger.warning("%s: ban already exists for %s", self.trigger_id, rhost)
         else:
-            exec_command(
-                [iptables, '-I', self.iptables_chain, '1', '-s', rhost, '-j', 'DROP'],
-                expect_result=0)
+            exec_command(iptables, '-I', self.iptables_chain, '1', '-s', rhost, '-j', 'DROP')
 
     def _unban(self, rhost):
         if self.ipv4_re.match(rhost):
             iptables = 'iptables'
         else:
             iptables = 'ip6tables'
-        exec_command([iptables, '-D', self.iptables_chain, '-s', rhost, '-j', 'DROP'])
+        exec_command(iptables, '-D', self.iptables_chain, '-s', rhost, '-j', 'DROP')
 
 
 class _DBTriggerStatus(DBBase):

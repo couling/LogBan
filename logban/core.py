@@ -193,3 +193,11 @@ def initialize_logging(level='INFO', log_path=None, date_format='%Y-%m-%d %H:%M:
             logging.getLogger(key).level = logging._nameToLevel[value]
 
     _logger.log(logging.NOTICE, "Logging Started")
+
+
+def deep_merge_dict(existing_config, new_config):
+    for key, value in new_config.items():
+        if key in existing_config and isinstance(existing_config[key], dict) and isinstance(value, dict):
+            deep_merge_dict(existing_config[key], value)
+        else:
+            existing_config[key] = value
