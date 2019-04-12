@@ -7,6 +7,7 @@ import sqlalchemy.ext.declarative
 import sys
 import threading
 import json
+import signal
 
 
 ############
@@ -77,12 +78,20 @@ def initialize_db(path='/var/lib/logban/logban.sqlite3', **excess_args):
 
 event_listeners = {}
 main_loop = asyncio.new_event_loop()
+main_loop_future = main_loop.create_future()
 
 
 def run_main_loop():
     global _main_loop_thread_id
     _main_loop_thread_id = threading.get_ident()
-    main_loop.run_forever()
+    main_loop.add_signal_handler(signal.SIGINT, shutdown_main_loop)
+    _logger.log(logging.NOTICE, "Monitoring...")
+    main_loop.run_until_complete(main_loop_future)
+    _logger.log(logging.NOTICE, "Shutdown")
+
+
+def shutdown_main_loop():
+    main_loop_future.set_result(None)
 
 
 def register_action(event, action):

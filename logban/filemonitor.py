@@ -4,7 +4,7 @@ import sqlalchemy
 import logging
 import threading
 
-from logban.core import DBBase, DBSession, main_loop
+from logban.core import DBBase, DBSession, main_loop, main_loop_future
 
 
 _logger = logging.getLogger(__name__)
@@ -51,7 +51,13 @@ def _file_monitor_loop():
         watcher.read_new_lines(auto_reset=False)
     notifier = pyinotify.Notifier(_wm, _INotifyEvent())
     thread = threading.Thread(target=notifier.loop)
+    thread.setDaemon(True)
     thread.start()
+    main_loop_future.add_done_callback(_shutdown)
+
+
+def _shutdown(*_):
+    close_monitors()
 
 
 def close_monitors():
