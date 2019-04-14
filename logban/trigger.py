@@ -63,7 +63,7 @@ class GroupCounterTrigger(object):
         self.count = int(count)
         self.timeout = timedelta(seconds=int(timeout))
 
-    def trigger(self, _, time, lines, **params):
+    def trigger(self, event, time, lines, **params):
         relevant_params = {key: params[key] for key in self.group_on}
         trigger_key = _trigger_key(relevant_params)
         with DBSession() as session:
@@ -85,8 +85,8 @@ class GroupCounterTrigger(object):
                 if previous_trigger_time.time < expiry_time:
                     status.times.remove(previous_trigger_time)
                     status.trigger_count -= 1
-            _logger.info("%s: Strike %d of %d for %s", self.trigger_id,
-                         status.trigger_count, self.count, relevant_params)
+            _logger.info("%s: Strike %d of %d for %s caused by %s", self.trigger_id,
+                         status.trigger_count, self.count, relevant_params, event)
             if status.trigger_count >= self.count:
                 publish_event(
                     self.result_event,

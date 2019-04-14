@@ -49,7 +49,7 @@ def _file_monitor_loop():
     _logger.info("Starting File Monitors")
     for log, watcher in file_monitors.items():
         _logger.info("Initializing %s", watcher.file_path)
-        watcher.read_new_lines(auto_reset=False)
+        watcher.read_new_lines()
     notifier = pyinotify.Notifier(_wm, _INotifyEvent())
     thread = threading.Thread(target=notifier.loop)
     thread.setDaemon(True)
@@ -98,31 +98,30 @@ class FileMonitor(object):
             self.status_entry = status_entry
         self.open(position)
 
-    def get_pos(self):
-        return self.file.tell()
-
-    def read_new_lines(self, auto_reset=True):
+    def read_new_lines(self):
         if self.file is None:
             return
-        pos = self.get_pos()
-        with DBSession() as session:
-            line = self.file.readline()
-            if line == '' and auto_reset:
-                self.open()
+        pos = self.file.tell()
+        line = self.file.readline()
+        if line == '':
+            self.file.seek(0, os.SEEK_END)
+            if pos < self.file.tell():
+                self.file.seek(0, os.SEEK_SET)
                 pos = self.file.tell()
                 line = self.file.readline()
-            while line != '':
-                if line[-1:] == '\n':
-                    for line_filter in self.filters:
-                        line_filter.filter_line(line=(line[:-1]))
-                    pos = self.file.tell()
-                    line = self.file.readline()
-                else:
-                    # if we get a partial line we seek back to the start of the line
-                    self.file.seek(pos)
-                    line = ''
+        while line != '':
+            if line[-1:] == '\n':
+                for line_filter in self.filters:
+                    line_filter.filter_line(line=(line[:-1]))
+                pos = self.file.tell()
+                line = self.file.readline()
+            else:
+                # if we get a partial line we seek back to the start of the line
+                self.file.seek(pos, os.SEEK_SET)
+                line = ''
+        with DBSession() as session:
             self.status_entry.position = pos
-            session.add(self.status_entry)
+            session.merge(self.status_entry)
 
     def open(self, position=0):
         self.close()
@@ -130,7 +129,7 @@ class FileMonitor(object):
             _logger.info("Opening %s at position %d", self.file_path, position)
             self.file = open(self.file_path, 'r')
             if position != 0:
-                self.file.seek(position, 0)
+                self.file.seek(position, os.SEEK_SET)
         else:
             _logger.warning("File does not exist %s", self.file_path)
 
