@@ -19,6 +19,7 @@ file_monitors = {}
 
 
 def register_file(path):
+    global _loop_scheduled
     if path not in file_monitors:
         new_monitor = FileMonitor(path)
         file_monitors[path] = new_monitor
@@ -26,7 +27,7 @@ def register_file(path):
         if directory not in _wd_dict:
             _wd_dict[directory] = _wm.add_watch(directory, _notify_events, rec=True)
         if not _loop_scheduled:
-            _loo_loop_scheduled=True
+            _loop_scheduled=True
             main_loop.call_soon(_file_monitor_loop)
 
 
