@@ -1,5 +1,6 @@
-/etc/logban/triggers/ip_ban.conf
-/etc/logban/triggers/sshd.conf
+/etc/logban/triggers/ip-ban.conf
+/etc/logban/triggers/bruit-force.conf
 /etc/logban/filters/sshd.conf
+/etc/logban/filters/smtpd.conf
 /etc/logban/logban.conf
 /etc/logrotate.d/logban
