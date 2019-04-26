@@ -105,10 +105,15 @@ class FileMonitor(object):
         line = self.file.readline()
         if line == '':
             self.file.seek(0, os.SEEK_END)
-            if pos < self.file.tell():
+            new_pos = self.file.tell
+            if pos < new_pos:
+                _logger.info("Resetting %s to position 0", self.file_path)
                 self.file.seek(0, os.SEEK_SET)
                 pos = self.file.tell()
                 line = self.file.readline()
+            elif pos > new_pos:
+                # file extended while checking
+                self.file.seek(pos, os.SEEK_SET)
         while line != '':
             if line[-1:] == '\n':
                 for line_filter in self.filters:
@@ -129,7 +134,12 @@ class FileMonitor(object):
             _logger.info("Opening %s at position %d", self.file_path, position)
             self.file = open(self.file_path, 'r')
             if position != 0:
-                self.file.seek(position, os.SEEK_SET)
+                self.file.seek(0, os.SEEK_END)
+                if self.file.tell() < position:
+                    _logger.info("Resetting %s to position 0", self.file_path)
+                    self.file.seek(0, os.SEEK_SET)
+                else:
+                    self.file.seek(position, os.SEEK_SET)
         else:
             _logger.warning("File does not exist %s", self.file_path)
 

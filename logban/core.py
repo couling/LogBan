@@ -68,7 +68,12 @@ def initialize_db(db_args):
     global DBBase
     _logger.debug("Initializing DB")
     db_args = db_args.copy()
-    DBSession._db_engine = sqlalchemy.create_engine(db_args.pop('drivername', 'sqlite') + '://', connect_args=db_args)
+    DBSession._db_engine = sqlalchemy.create_engine(
+        "{drivermame}://{host}/{database}".format(
+            drivermame=db_args.pop('drivername', 'sqlite'),
+            host=db_args.pop('host', ''),
+            database=db_args.pop('database')
+        ), connect_args=db_args)
 
     DBBase.metadata.create_all(DBSession._db_engine)
     DBSession._open_new_session = sqlalchemy.orm.sessionmaker(bind=DBSession._db_engine)
