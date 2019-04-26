@@ -1,3 +1,5 @@
 #!/bin/sh
 
 systemctl start logban.service || true
+mkdir -p /var/lib/logban
+chmod 770 /var/lib/logban

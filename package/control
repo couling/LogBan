@@ -3,6 +3,7 @@ Section: devel
 Priority: optional
 Architecture: all
 Depends: python3, python3-configobj, python3-pyinotify, python3-sqlalchemy
+Recommends: python3-pymysql
 Suggests:
 Conflicts:
 Replaces:

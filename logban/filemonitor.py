@@ -144,5 +144,5 @@ class _DBLogStatus(DBBase):
 
     __tablename__ = 'log_status'
 
-    path = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
+    path = sqlalchemy.Column(sqlalchemy.String(1000), primary_key=True)
     position = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)

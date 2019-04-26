@@ -249,9 +249,9 @@ class _DBTriggerStatus(DBBase):
 
     __tablename__ = 'trigger_status'
 
-    trigger_id = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    status_key = sqlalchemy.Column(sqlalchemy.String, primary_key=True)
-    status = sqlalchemy.Column(sqlalchemy.String)
+    trigger_id = sqlalchemy.Column(sqlalchemy.String(100),  primary_key=True)
+    status_key = sqlalchemy.Column(sqlalchemy.String(1000), primary_key=True)
+    status = sqlalchemy.Column(sqlalchemy.String(10))
     first_time = sqlalchemy.Column(sqlalchemy.DateTime)
     last_time = sqlalchemy.Column(sqlalchemy.DateTime)
     trigger_count = sqlalchemy.Column(sqlalchemy.Integer)
@@ -264,8 +264,8 @@ class _DBTriggerStatusTime(DBBase):
     __tablename__ = 'trigger_times'
 
     id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_time_seq'), primary_key=True)
-    trigger_id = sqlalchemy.Column(sqlalchemy.String, nullable=False)
-    status_key = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    trigger_id = sqlalchemy.Column(sqlalchemy.String(100), nullable=False)
+    status_key = sqlalchemy.Column(sqlalchemy.String(1000), nullable=False)
     time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
     __table_args__ = (sqlalchemy.ForeignKeyConstraint(
         ['trigger_id', 'status_key'],
@@ -286,11 +286,11 @@ class _DBTriggerStatusLine(DBBase):
     __tablename__ = 'trigger_lines'
 
     id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_line_seq'), primary_key=True)
-    trigger_id = sqlalchemy.Column(sqlalchemy.String, nullable=False)
-    status_key = sqlalchemy.Column(sqlalchemy.String, nullable=False)
-    log = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    trigger_id = sqlalchemy.Column(sqlalchemy.String(100), nullable=False)
+    status_key = sqlalchemy.Column(sqlalchemy.String(1000), nullable=False)
+    log = sqlalchemy.Column(sqlalchemy.String(1000), nullable=False)
     time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
-    line = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    line = sqlalchemy.Column(sqlalchemy.Text, nullable=False)
     __table_args__ = (sqlalchemy.ForeignKeyConstraint(
         ['trigger_id', 'status_key'],
         ['trigger_status.trigger_id', 'trigger_status.status_key'],

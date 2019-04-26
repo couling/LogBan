@@ -1,7 +1,6 @@
 from datetime import datetime
 import asyncio
 import logging
-import os.path
 import sqlalchemy.orm
 import sqlalchemy.ext.declarative
 import sys
@@ -19,8 +18,9 @@ DBBase = sqlalchemy.ext.declarative.declarative_base()
 
 class DBSession:
 
+    _main_thread_id = None
     _db_engine = None
-    _db_session_dict = {}
+    _db_session_head = None
     _open_new_session = None
     _ref_count = 0
 
@@ -30,14 +30,15 @@ class DBSession:
         self._db_session = None
 
     def __enter__(self):
-        thread_id = threading.get_ident()
-        self._parent = DBSession._db_session_dict.get(thread_id, None)
+        if threading.get_ident() != DBSession._main_thread_id:
+            raise NonMainThreadDBAccess()
+        self._parent = DBSession._db_session_head
         if self._parent is None:
             self._db_session = DBSession._open_new_session()
         else:
             self._db_session = self._parent._db_session
-        self._db_session.begin_nested()
-        DBSession._db_session_dict[thread_id] = self
+            self._db_session.begin_nested()
+        DBSession._db_session_head = self
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -49,9 +50,9 @@ class DBSession:
             self._db_session.rollback()
         if self._parent is None:
             self._db_session.close()
-            del DBSession._db_session_dict[threading.get_ident()]
+            DBSession._db_session_head = None
         else:
-            DBSession._db_session_dict[threading.get_ident()] = self._parent
+            DBSession._db_session_head = self._parent
 
     def __getattr__(self, name):
         return getattr(self._db_session, name)
@@ -63,13 +64,21 @@ class DBSession:
         self.is_commit = False
 
 
-def initialize_db(path='/var/lib/logban/logban.sqlite3', **excess_args):
-    _logger.debug("Initializing DB %s", path)
+def initialize_db(db_args):
     global DBBase
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    DBSession._db_engine = sqlalchemy.create_engine('sqlite:///%s' % path)
+    _logger.debug("Initializing DB")
+    db_args = db_args.copy()
+    DBSession._db_engine = sqlalchemy.create_engine(db_args.pop('drivername', 'sqlite') + '://', connect_args=db_args)
+
     DBBase.metadata.create_all(DBSession._db_engine)
     DBSession._open_new_session = sqlalchemy.orm.sessionmaker(bind=DBSession._db_engine)
+    DBSession._main_thread_id = threading.get_ident()
+
+
+class NonMainThreadDBAccess(Exception):
+
+    def __init__(self):
+        self.message = "Attempt to access the database on non-main thread"
 
 
 ##########
@@ -85,6 +94,7 @@ def run_main_loop():
     global _main_loop_thread_id
     _main_loop_thread_id = threading.get_ident()
     main_loop.add_signal_handler(signal.SIGINT, shutdown_main_loop)
+    main_loop.add_signal_handler(signal.SIGTERM, shutdown_main_loop)
     _logger.log(logging.NOTICE, "Monitoring...")
     main_loop.run_until_complete(main_loop_future)
     _logger.log(logging.NOTICE, "Shutdown")
@@ -103,23 +113,12 @@ def register_action(event, action):
 
 def publish_event(event, event_time=None, **params):
     if event_time is not None:
-        _register_event_for_later(event, event_time, params)
-    else:
-        if event_time is not None:
-            params['event_time'] = event_time
-        main_loop.call_soon_threadsafe(_fire_event, event, params)
-
-
-def _register_event_for_later(event, event_time, params):
-    # We only access the database from the main thread
-    # If this isn't the main thread then schedule the same action using the main_loop
-    if threading.get_ident() == _main_loop_thread_id:
         _logger.debug("Scheduled event %s for %s: %s", event, event_time, params)
         with DBSession() as session:
             event_object = _DBFutureEvent(event=event, event_time=event_time, params=json.dumps(params))
-            session.add(event_object)
+            session.merge(event_object)
     else:
-        main_loop.call_soon_threadsafe(_register_event_for_later, event_time, params)
+        main_loop.call_soon_threadsafe(_fire_event, event, params)
 
 
 def _fire_event(event, params):
@@ -138,13 +137,17 @@ def _fire_event(event, params):
 
 def _fire_timed_events():
     _logger.debug("Tick... checking timed events")
-    with DBSession() as session:
-        for event_details in session.query(_DBFutureEvent).filter(_DBFutureEvent.event_time <= datetime.now())\
-                .order_by(_DBFutureEvent.event_time):
+    while True:
+        with DBSession() as session:
+            event_details = session.query(_DBFutureEvent).filter(_DBFutureEvent.event_time <= datetime.now()).\
+                order_by(_DBFutureEvent.event_time).first()
+            if event_details is None:
+                break
+            event = event_details.event
             params = json.loads(event_details.params)
             params['event_time'] = event_details.event_time
-            _fire_event(event_details.event, params)
             session.delete(event_details)
+        _fire_event(event, params)
     main_loop.call_later(60, _fire_timed_events)
 
 
@@ -155,9 +158,8 @@ class _DBFutureEvent(DBBase):
 
     __tablename__ = 'future_event'
 
-    id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_line_seq'), primary_key=True)
-    event = sqlalchemy.Column(sqlalchemy.String, nullable=False)
-    params = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    event = sqlalchemy.Column(sqlalchemy.String(100), nullable=False, primary_key=True)
+    params = sqlalchemy.Column(sqlalchemy.String(1000), nullable=False, primary_key=True)
     event_time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
 
 

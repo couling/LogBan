@@ -74,7 +74,7 @@ def build_daemon():
     load_plugin_modules()
 
     # Open database connection
-    logban.core.initialize_db(**core_config.get('db', {}))
+    logban.core.initialize_db(core_config.get('db', {}))
 
     # Setup file monitors and filters
     for file_path, filter_conf in filter_config.items():
