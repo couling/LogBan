@@ -213,36 +213,33 @@ class IptablesBanTrigger(AbstractBanTrigger):
 
     def _initialize(self):
         _logger.info("%s: Initializing", self.trigger_id)
-        for iptables in ['iptables', 'ip6tables']:
-            result = exec_command(
-                iptables, '-C', 'INPUT', '-j', self.iptables_chain,
-                log_level=logging.DEBUG,
-                expect_result=None)
-            if result != 0:
-                exec_command(iptables, '-N', self.iptables_chain)
-                exec_command(iptables, '-A', 'INPUT', '-j', self.iptables_chain)
-                exec_command(iptables, '-A', self.iptables_chain, '-j', 'RETURN')
+        # IPv4 Init
+        chain = self.iptables_chain + '-v4'
+        exec_command('ipset', '-exist', 'create', chain, 'hash:ip', 'family', 'inet')
+        drop_rule = ['INPUT', '-m', 'set', '--match-set', chain, 'src', '-j', 'DROP']
+        if exec_command('iptables', '-C', *drop_rule, log_level=logging.DEBUG, expect_result=None) != 0:
+            exec_command('iptables', '-A', *drop_rule)
+        # IPv6
+        chain = self.iptables_chain + '-v6'
+        exec_command('ipset', '-exist', 'create', chain, 'hash:net', 'family', 'inet6')
+        drop_rule = ['INPUT', '-m', 'set', '--match-set', chain, 'src', '-j', 'DROP']
+        if exec_command('ip6tables', '-C', *drop_rule, log_level=logging.DEBUG, expect_result=None) != 0:
+            exec_command('ip6tables', '-A', *drop_rule)
+
         for ban in self.all_bans():
             self._ban(**ban)
 
     def _ban(self, rhost):
         if self.ipv4_re.match(rhost):
-            iptables = 'iptables'
+            exec_command('ipset', '-exist', 'add', self.iptables_chain + '-v4', rhost)
         else:
-            iptables = 'ip6tables'
-        if exec_command(
-                iptables, '-C', self.iptables_chain, '-s', rhost, '-j', 'DROP',
-                log_level=logging.DEBUG, expect_result=None) == 0:
-            _logger.warning("%s: ban already exists for %s", self.trigger_id, rhost)
-        else:
-            exec_command(iptables, '-I', self.iptables_chain, '1', '-s', rhost, '-j', 'DROP')
+            exec_command('ipset', '-exist', 'add', self.iptables_chain + '-v6', rhost)
 
     def _unban(self, rhost):
         if self.ipv4_re.match(rhost):
-            iptables = 'iptables'
+            exec_command('ipset', 'del', self.iptables_chain + '-v4', rhost)
         else:
-            iptables = 'ip6tables'
-        exec_command(iptables, '-D', self.iptables_chain, '-s', rhost, '-j', 'DROP')
+            exec_command('ipset', 'del', self.iptables_chain + '-v6', rhost)
 
 
 class _DBTriggerStatus(DBBase):

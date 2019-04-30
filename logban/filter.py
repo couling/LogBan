@@ -1,5 +1,6 @@
 import re
 import logging
+import ipaddress
 
 from datetime import datetime, timedelta
 
@@ -45,6 +46,12 @@ def _process_syslog_time(params):
         del params['syslog_time']
 
 
+def _process_ipaddress(params):
+    if 'rhost' in params:
+        if isinstance(ipaddress.ip_address(params['rhost']), ipaddress.IPv6Address):
+            params['rhost'] = str(ipaddress.ip_network(params['rhost'] + '/64', strict=False))
+
+
 named_groups = {
     'rhost': r"(?P<rhost>([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)|"
              r"|(([0-9a-fA-F]{1,4}:){7,7}[0-9a-fA-F]{1,4}|"
@@ -73,5 +80,6 @@ named_groups = {
 
 
 param_processors = [
-    _process_syslog_time
+    _process_syslog_time,
+    _process_ipaddress,
 ]

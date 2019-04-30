@@ -105,7 +105,7 @@ class FileMonitor(object):
         line = self.file.readline()
         if line == '':
             self.file.seek(0, os.SEEK_END)
-            new_pos = self.file.tell
+            new_pos = self.file.tell()
             if pos < new_pos:
                 _logger.info("Resetting %s to position 0", self.file_path)
                 self.file.seek(0, os.SEEK_SET)
