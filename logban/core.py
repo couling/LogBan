@@ -2,11 +2,14 @@ from datetime import datetime
 import asyncio
 import logging
 import sqlalchemy.orm
+import sqlalchemy.types
 import sqlalchemy.ext.declarative
 import sys
 import threading
 import json
 import signal
+import hashlib
+import base64
 
 
 ############
@@ -80,6 +83,28 @@ def initialize_db(db_args):
     DBSession._main_thread_id = threading.get_ident()
 
 
+def dict_to_key(value):
+    key_string = json.dumps(value, sort_keys=True)
+    key_hash = hashlib.sha256()
+    key_hash.update(bytes(key_string, encoding='utf-8'))
+    return base64.b64encode(key_hash.digest()).decode("utf-8")
+
+
+class DictionaryType(sqlalchemy.types.TypeDecorator):
+
+    impl = sqlalchemy.Text
+
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            value = json.dumps(value, sort_keys=True)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            value = json.loads(value)
+        return value
+
+
 class NonMainThreadDBAccess(Exception):
 
     def __init__(self):
@@ -120,7 +145,12 @@ def publish_event(event, event_time=None, **params):
     if event_time is not None:
         _logger.debug("Scheduled event %s for %s: %s", event, event_time, params)
         with DBSession() as session:
-            event_object = _DBFutureEvent(event=event, event_time=event_time, params=json.dumps(params))
+            event_object = _DBFutureEvent(
+                event=event,
+                event_key=dict_to_key(params),
+                event_time=event_time,
+                params=params,
+            )
             session.merge(event_object)
     else:
         main_loop.call_soon_threadsafe(_fire_event, event, params)
@@ -149,7 +179,7 @@ def _fire_timed_events():
             if event_details is None:
                 break
             event = event_details.event
-            params = json.loads(event_details.params)
+            params = event_details.params
             params['event_time'] = event_details.event_time
             session.delete(event_details)
         _fire_event(event, params)
@@ -158,14 +188,19 @@ def _fire_timed_events():
 
 main_loop.call_later(0, _fire_timed_events)
 
+from sqlalchemy import Column, String, DateTime
 
 class _DBFutureEvent(DBBase):
 
     __tablename__ = 'future_event'
 
-    event = sqlalchemy.Column(sqlalchemy.String(100), nullable=False, primary_key=True)
-    params = sqlalchemy.Column(sqlalchemy.String(1000), nullable=False, primary_key=True)
-    event_time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
+    def decoded_params(self):
+        return json.loads(self.params)
+
+    event = Column(String(100), primary_key=True)
+    event_key = Column(String(44), primary_key=True)
+    params = Column(DictionaryType(), nullable=False)
+    event_time = Column(DateTime, nullable=False)
 
 
 _future_event_time_index = sqlalchemy.Index(

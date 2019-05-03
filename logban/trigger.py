@@ -1,5 +1,4 @@
 import json
-import sqlalchemy.orm
 import subprocess
 import logging
 import re
@@ -7,14 +6,10 @@ import re
 from abc import ABC, abstractmethod
 from datetime import timedelta
 
-from logban.core import register_action, publish_event, DBBase, DBSession, wrap_list, deep_merge_dict
+from logban.core import register_action, publish_event, DBBase, DBSession, wrap_list, deep_merge_dict, dict_to_key
 
 
 _logger = logging.getLogger(__name__)
-
-
-def _trigger_key(key):
-    return json.dumps(key, sort_keys=True)
 
 
 def _decode_trigger_key(key):
@@ -65,13 +60,14 @@ class GroupCounterTrigger(object):
 
     def trigger(self, event, time, lines, **params):
         relevant_params = {key: params[key] for key in self.group_on}
-        trigger_key = _trigger_key(relevant_params)
+        key = dict_to_key((relevant_params))
         with DBSession() as session:
-            status = session.query(_DBTriggerStatus).get((self.trigger_id, trigger_key))
+            status = session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id, status_key=key).one_or_none()
             if status is None:
                 status = _DBTriggerStatus(
                     trigger_id=self.trigger_id,
-                    status_key=trigger_key,
+                    status_key=key,
+                    status_scope=relevant_params,
                     trigger_count=1,
                     last_time=time,
                     first_time=time
@@ -85,6 +81,9 @@ class GroupCounterTrigger(object):
                 if previous_trigger_time.time < expiry_time:
                     status.times.remove(previous_trigger_time)
                     status.trigger_count -= 1
+                else:
+                    # Times come out in order so stop on the first
+                    break
             _logger.info("%s: Strike %d of %d for %s caused by %s", self.trigger_id,
                          status.trigger_count, self.count, relevant_params, event)
             if status.trigger_count >= self.count:
@@ -94,9 +93,7 @@ class GroupCounterTrigger(object):
                     time=time,
                     **relevant_params
                 )
-                session.query(_DBTriggerStatus).filter_by(
-                    trigger_id=self.trigger_id, status_key=trigger_key
-                ).delete()
+                session.delete(status)
             else:
                 status.times.append(_DBTriggerStatusTime(time=time))
                 for log, line_time, line in lines:
@@ -105,10 +102,10 @@ class GroupCounterTrigger(object):
     def reset(self, _, **params):
         relevant_params = {key: params[key] for key in self.group_on}
         _logger.debug("%s: reset to 0 %s", self.trigger_id, relevant_params)
-        trigger_key = _trigger_key(relevant_params)
         with DBSession() as session:
             session.query(_DBTriggerStatus).filter_by(
-                trigger_id=self.trigger_id, status_key=trigger_key
+                trigger_id=self.trigger_id,
+                status_key=dict_to_key(relevant_params)
             ).delete()
 
 
@@ -129,14 +126,15 @@ class AbstractBanTrigger(ABC):
 
     def trigger(self, _, time, lines, **params):
         relevant_params = {key: params[key] for key in self.ban_params}
-        trigger_key = _trigger_key(relevant_params)
+        key = dict_to_key(relevant_params)
         with DBSession() as session:
-            status = session.query(_DBTriggerStatus).get((self.trigger_id, trigger_key))
+            status = session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id, status_key=key).one_or_none()
             if status is None:
                 ban_now = True
                 status = _DBTriggerStatus(
                     trigger_id=self.trigger_id,
-                    status_key=trigger_key,
+                    status_key=key,
+                    status_scope=relevant_params,
                     trigger_count=0,
                     first_time=time
                 )
@@ -152,29 +150,26 @@ class AbstractBanTrigger(ABC):
                 status.last_time = time
                 status.trigger_count += 1
                 status.times.append(_DBTriggerStatusTime(time=time))
-                _logger.log(logging.NOTICE, "%s: Banning %s", self.trigger_id, trigger_key)
+                _logger.log(logging.NOTICE, "%s: Banning %s", self.trigger_id, relevant_params)
                 self._ban(**relevant_params)
                 probation_time = time + (self.ban_time * (self.repeat_scale ** (status.trigger_count - 1)))
-                publish_event(self.time_event, event_time=probation_time, **relevant_params)
+                publish_event(self.time_event, event_time=probation_time, key=key)
             else:
-                _logger.debug("%s: Skipping duplicate ban: %s", self.trigger_id, trigger_key)
+                _logger.debug("%s: Skipping duplicate ban: %s", self.trigger_id, relevant_params)
 
-    def timer_action(self, event, event_time, **params):
-        trigger_key = _trigger_key(params)
+    def timer_action(self, event, event_time, key):
         with DBSession() as session:
-            status = session.query(_DBTriggerStatus).get((self.trigger_id, trigger_key))
+            status = session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id, status_key=key).one_or_none()
             if status is None:
                 return
             if status.status == 'BAN':
-                _logger.log(logging.NOTICE, "%s: Probation %s", self.trigger_id, trigger_key)
-                self._unban(**params)
+                _logger.log(logging.NOTICE, "%s: Probation %s", self.trigger_id, status.status_scope)
+                self._unban(**status.status_scope)
                 status.status = 'PROBATION'
-                publish_event(event, event_time=event_time + self.probation_time, **params)
+                publish_event(event, event_time=event_time + self.probation_time, key=key)
             elif status.status == 'PROBATION':
-                _logger.log(logging.NOTICE, "%s: Clear %s", self.trigger_id, trigger_key)
-                session.query(_DBTriggerStatus).filter_by(
-                    trigger_id=self.trigger_id, status_key=trigger_key
-                ).delete()
+                _logger.log(logging.NOTICE, "%s: Clear %s", self.trigger_id, status.status_scope)
+                session.delete(status)
 
     @abstractmethod
     def _ban(self, **params):
@@ -242,64 +237,51 @@ class IptablesBanTrigger(AbstractBanTrigger):
             exec_command('ipset', 'del', self.iptables_chain + '-v6', rhost)
 
 
+from sqlalchemy import Column, Integer, String, Text, DateTime, Sequence, UniqueConstraint, ForeignKey
+from sqlalchemy.orm import relationship
+from logban.core import DictionaryType
+
 class _DBTriggerStatus(DBBase):
 
     __tablename__ = 'trigger_status'
 
-    trigger_id = sqlalchemy.Column(sqlalchemy.String(100),  primary_key=True)
-    status_key = sqlalchemy.Column(sqlalchemy.String(1000), primary_key=True)
-    status = sqlalchemy.Column(sqlalchemy.String(10))
-    first_time = sqlalchemy.Column(sqlalchemy.DateTime)
-    last_time = sqlalchemy.Column(sqlalchemy.DateTime)
-    trigger_count = sqlalchemy.Column(sqlalchemy.Integer)
-    lines = sqlalchemy.orm.relationship('_DBTriggerStatusLine')
-    times = sqlalchemy.orm.relationship('_DBTriggerStatusTime')
+    id = Column(Integer, Sequence('trigger_status_seq'), primary_key=True)
+    trigger_id = Column(String(100), nullable=False)
+    status_key = Column(String(44), nullable=False)
+    status_scope = Column(DictionaryType, nullable=False)
+    status = Column(String(10))
+    first_time = Column(DateTime)
+    last_time = Column(DateTime)
+    trigger_count = Column(Integer)
+    lines = relationship('_DBTriggerStatusLine',
+                         passive_deletes='all',
+                         backref="status")
+    times = relationship('_DBTriggerStatusTime',
+                         passive_deletes='all',
+                         order_by='_DBTriggerStatusTime.time',
+                         backref="status")
+
+    __table_args__ = ( UniqueConstraint('trigger_id', 'status_key'), {} )
 
 
 class _DBTriggerStatusTime(DBBase):
 
     __tablename__ = 'trigger_times'
 
-    id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_time_seq'), primary_key=True)
-    trigger_id = sqlalchemy.Column(sqlalchemy.String(100), nullable=False)
-    status_key = sqlalchemy.Column(sqlalchemy.String(1000), nullable=False)
-    time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
-    __table_args__ = (sqlalchemy.ForeignKeyConstraint(
-        ['trigger_id', 'status_key'],
-        ['trigger_status.trigger_id', 'trigger_status.status_key'],
-        ondelete="CASCADE"
-    ), {})
-
-
-_trigger_times_index = sqlalchemy.Index(
-    'trigger_times_index',
-    _DBTriggerStatusTime.trigger_id,
-    _DBTriggerStatusTime.status_key
-)
+    id = Column(Integer, Sequence('trigger_time_seq'), primary_key=True)
+    status_id = Column(Integer, ForeignKey('trigger_status.id', ondelete="CASCADE"), nullable=False, index=True)
+    time = Column(DateTime, nullable=False)
 
 
 class _DBTriggerStatusLine(DBBase):
 
     __tablename__ = 'trigger_lines'
 
-    id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.Sequence('trigger_line_seq'), primary_key=True)
-    trigger_id = sqlalchemy.Column(sqlalchemy.String(100), nullable=False)
-    status_key = sqlalchemy.Column(sqlalchemy.String(1000), nullable=False)
-    log = sqlalchemy.Column(sqlalchemy.String(1000), nullable=False)
-    time = sqlalchemy.Column(sqlalchemy.DateTime, nullable=False)
-    line = sqlalchemy.Column(sqlalchemy.Text, nullable=False)
-    __table_args__ = (sqlalchemy.ForeignKeyConstraint(
-        ['trigger_id', 'status_key'],
-        ['trigger_status.trigger_id', 'trigger_status.status_key'],
-        ondelete="CASCADE"
-    ), {})
-
-
-_trigger_lines_index = sqlalchemy.Index(
-    'trigger_lines_index',
-    _DBTriggerStatusLine.trigger_id,
-    _DBTriggerStatusLine.status_key
-)
+    id = Column(Integer, Sequence('trigger_line_seq'), primary_key=True)
+    status_id = Column(Integer, ForeignKey('trigger_status.id', ondelete="CASCADE"), nullable=False, index=True)
+    log = Column(String(1000), nullable=False)
+    time = Column(DateTime, nullable=False)
+    line = Column(Text, nullable=False)
 
 
 trigger_types = {
