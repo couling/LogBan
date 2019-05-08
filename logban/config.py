@@ -79,11 +79,14 @@ def build_daemon():
     # Setup file monitors and filters
     for file_path, filter_conf in filter_config.items():
         file_path = os.path.realpath(file_path)
-        if file_path not in logban.filemonitor.file_monitors:
-            logban.filemonitor.register_file(file_path)
+        try:
+            file_monitor = logban.filemonitor.all_file_monitors[file_path]
+        except KeyError:
+            file_monitor = logban.filemonitor.FileMonitor(file_path)
+            logban.filemonitor.all_file_monitors[file_path] = file_monitor
         for config in filter_conf:
             new_filter = logban.filter.LogFilter(**config)
-            logban.filemonitor.file_monitors[file_path].filters.append(new_filter)
+            file_monitor.filters.append(new_filter)
 
     # Setup triggers
     for trigger_id, config in trigger_config.items():

@@ -153,7 +153,7 @@ def publish_event(event, event_time=None, **params):
             )
             session.merge(event_object)
     else:
-        main_loop.call_soon_threadsafe(_fire_event, event, params)
+        main_loop.call_soon(_fire_event, event, params)
 
 
 def _fire_event(event, params):

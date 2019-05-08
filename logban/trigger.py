@@ -122,7 +122,8 @@ class AbstractBanTrigger(ABC):
     def all_bans(self):
         with DBSession() as session:
             for ban in session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id):
-                yield _decode_trigger_key(ban.status_key)
+                if ban.status == 'BAN':
+                    yield ban.status_scope
 
     def trigger(self, _, time, lines, **params):
         relevant_params = {key: params[key] for key in self.ban_params}
