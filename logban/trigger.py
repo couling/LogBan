@@ -6,7 +6,7 @@ import re
 from abc import ABC, abstractmethod
 from datetime import timedelta
 
-from logban.core import register_action, publish_event, DBBase, DBSession, wrap_list, deep_merge_dict, dict_to_key
+from logban.core import register_action, publish_event, DBBase, DBSession, wrap_list, deep_merge_dict, hash_dict
 
 
 _logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class GroupCounterTrigger(object):
 
     def trigger(self, event, time, lines, **params):
         relevant_params = {key: params[key] for key in self.group_on}
-        key = dict_to_key((relevant_params))
+        key = hash_dict((relevant_params))
         with DBSession() as session:
             status = session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id, status_key=key).one_or_none()
             if status is None:
@@ -105,7 +105,7 @@ class GroupCounterTrigger(object):
         with DBSession() as session:
             session.query(_DBTriggerStatus).filter_by(
                 trigger_id=self.trigger_id,
-                status_key=dict_to_key(relevant_params)
+                status_key=hash_dict(relevant_params)
             ).delete()
 
 
@@ -127,7 +127,7 @@ class AbstractBanTrigger(ABC):
 
     def trigger(self, _, time, lines, **params):
         relevant_params = {key: params[key] for key in self.ban_params}
-        key = dict_to_key(relevant_params)
+        key = hash_dict(relevant_params)
         with DBSession() as session:
             status = session.query(_DBTriggerStatus).filter_by(trigger_id=self.trigger_id, status_key=key).one_or_none()
             if status is None:

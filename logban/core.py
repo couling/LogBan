@@ -4,12 +4,13 @@ import logging
 import sqlalchemy.orm
 import sqlalchemy.types
 import sqlalchemy.ext.declarative
-import sys
 import threading
 import json
 import signal
 import hashlib
 import base64
+
+_logger = logging.getLogger(__name__)
 
 
 ############
@@ -83,10 +84,14 @@ def initialize_db(db_args):
     DBSession._main_thread_id = threading.get_ident()
 
 
-def dict_to_key(value):
+def hash_dict(value):
     key_string = json.dumps(value, sort_keys=True)
+    return hash_string(key_string)
+
+
+def hash_string(value):
     key_hash = hashlib.sha256()
-    key_hash.update(bytes(key_string, encoding='utf-8'))
+    key_hash.update(bytes(value, encoding='utf-8'))
     return base64.b64encode(key_hash.digest()).decode("utf-8")
 
 
@@ -147,7 +152,7 @@ def publish_event(event, event_time=None, **params):
         with DBSession() as session:
             event_object = _DBFutureEvent(
                 event=event,
-                event_key=dict_to_key(params),
+                event_key=hash_dict(params),
                 event_time=event_time,
                 params=params,
             )
@@ -190,6 +195,7 @@ main_loop.call_later(0, _fire_timed_events)
 
 from sqlalchemy import Column, String, DateTime
 
+
 class _DBFutureEvent(DBBase):
 
     __tablename__ = 'future_event'
@@ -208,10 +214,10 @@ _future_event_time_index = sqlalchemy.Index(
     _DBFutureEvent.event_time
 )
 
-
 ########
 # Misc #
 ########
+
 
 def wrap_list(value):
     if isinstance(value, list):
@@ -219,31 +225,6 @@ def wrap_list(value):
     if value is None or value == '':
         return []
     return [value]
-
-
-_logger = logging.getLogger(__name__)
-
-
-def initialize_logging(level='INFO', log_path=None, date_format='%Y-%m-%d %H:%M:%S',
-                       fine_grained_level=None):
-    logging.NOTICE = logging.ERROR + 5
-    logging._levelToName[logging.NOTICE] = 'NOTICE'
-    logging._nameToLevel['NOTICE'] = logging.NOTICE
-    line_format = "%(asctime)s %(name)s [%(levelname)-7.7s]  %(message)s"
-    handlers = []
-    if log_path is not None:
-        handlers.append(logging.FileHandler(filename=log_path))
-    else:
-        handlers.append(logging.StreamHandler(stream=sys.stdout))
-
-    logging.basicConfig(level=logging._nameToLevel[level], format=line_format,
-                        handlers=handlers, datefmt=date_format)
-
-    if fine_grained_level is not None:
-        for key, value in fine_grained_level.items():
-            logging.getLogger(key).level = logging._nameToLevel[value]
-
-    _logger.log(logging.NOTICE, "Logging Started")
 
 
 def deep_merge_dict(existing_config, new_config):

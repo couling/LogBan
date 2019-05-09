@@ -4,7 +4,8 @@ import sqlalchemy
 import logging
 import threading
 
-from logban.core import DBBase, DBSession, main_loop, main_loop_future
+from logban.core import DBBase, DBSession, main_loop, main_loop_future, hash_string
+
 from abc import ABC, abstractmethod
 
 _logger = logging.getLogger(__name__)
@@ -31,9 +32,9 @@ class FileMonitor(AbstractFileMonitor):
         self.directory_monitor = _DirectoryMonitor.get_directory_monitor_for(file_path)
         self.directory_monitor.file_monitors[file_path] = self
         with DBSession() as session:
-            status_entry = session.query(_DBLogStatus).get(file_path)
+            status_entry = session.query(_DBLogStatus).get(hash_string(file_path))
             if status_entry is None:
-                status_entry = _DBLogStatus(path=file_path, position=0)
+                status_entry = _DBLogStatus(id=hash_string(file_path), path=file_path, position=0)
                 session.add(status_entry)
                 position = 0
             else:
@@ -169,5 +170,6 @@ class _DBLogStatus(DBBase):
 
     __tablename__ = 'log_status'
 
-    path = sqlalchemy.Column(sqlalchemy.String(1000), primary_key=True)
+    id = sqlalchemy.Column(sqlalchemy.String(44), primary_key=True)
+    path = sqlalchemy.Column(sqlalchemy.TEXT, nullable=False)
     position = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
