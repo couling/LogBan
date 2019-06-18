@@ -13,8 +13,7 @@ Logban is intended as a replacement for [fail2ban][1].  This tool is still very 
 
 Logban has been packaged for Debian Linux and should be compatible with Ubuntu and Mint.  Installing on any of these systems the `.deb` file can be downloaded from the [releases][3] page.  To install it (as root) download the file and then:
 
-    dpkg --install couling-logban_1.0_all.deb
-    apt-get install --fix-broken
+    apt-get install ./couling-logban_1.0_all.deb
 
 ### Installing from source
 
